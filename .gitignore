@@ -1,0 +1,65 @@
+# ==============================================================================
+# MaintenX Monorepo - Git Ignore
+# ==============================================================================
+
+# Environment files & secrets (CRITICAL: Never commit secrets)
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.pfx
+*.cert
+*.key
+
+# .NET / Visual Studio / JetBrains
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+.vs/
+.idea/
+*.DotSettings.user
+appsettings.Development.local.json
+appsettings.Production.local.json
+
+# Node.js & Web (pnpm / Next.js)
+node_modules/
+.pnpm-store/
+.next/
+out/
+dist/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+next-env.d.ts
+
+# Flutter & Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.lock.d
+ios/Pods/
+ios/.symlinks/
+android/.gradle/
+android/local.properties
+
+# Docker & Database
+postgres_data/
+*.db
+*.sqlite
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test artifacts
+TestResults/
+

@@ -1,0 +1,31 @@
+# ==============================================================================
+# MaintenX ASP.NET Core API Dockerfile
+# Multi-stage build for production containerization
+# ==============================================================================
+
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build
+WORKDIR /src
+
+# Copy project files first for layer caching
+COPY ["services/api/MaintenX.Api.csproj", "services/api/"]
+RUN dotnet restore "services/api/MaintenX.Api.csproj"
+
+# Copy source code and build
+COPY ["services/api/", "services/api/"]
+WORKDIR /src/services/api
+RUN dotnet publish "MaintenX.Api.csproj" -c Release -o /app/publish /p:UseAppHost=false
+
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+WORKDIR /app
+EXPOSE 5000
+
+ENV ASPNETCORE_URLS=http://+:5000
+ENV ASPNETCORE_ENVIRONMENT=Production
+
+# Run as non-root user for security
+USER app
+
+COPY --from=build /app/publish .
+ENTRYPOINT ["dotnet", "MaintenX.Api.dll"]
