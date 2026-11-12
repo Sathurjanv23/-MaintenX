@@ -29,8 +29,9 @@ Key deliverables:
    - Upgraded deprecated GitHub Actions (`actions/setup-java@v4` &rarr; `actions/setup-java@v5`).
    - Pinned Flutter SDK version explicitly to `3.29.0` via `subosito/flutter-action@v2`.
    - Added a dedicated `flutter-ci` job validating `flutter pub get`, `flutter analyze`, and `flutter test`.
-5. **.NET 10 Package Major Version Alignment**:
-   - Upgraded core .NET packages from 8.x to official 10.0 releases (`Microsoft.AspNetCore.OpenApi` 10.0.0, `Microsoft.Extensions.Hosting` 10.0.0, and `Microsoft.AspNetCore.Mvc.Testing` 10.0.0).
+5. **.NET 10 Package Major Version Alignment & Compatibility**:
+   - Upgraded core .NET packages to official 10.0 releases (`Microsoft.Extensions.Hosting` 10.0.0 and `Microsoft.AspNetCore.Mvc.Testing` 10.0.0).
+   - Evaluated `Microsoft.AspNetCore.OpenApi`: Version 10.0.0 introduces `Microsoft.OpenApi` 2.x which is incompatible with `Swashbuckle.AspNetCore` 6.5.0 (`Microsoft.OpenApi.Models` namespace break); pinned to 8.0.8 to preserve full OpenAPI / Swagger UI compatibility without unnecessary framework churn.
 6. **Strict PostgreSQL Integration Testing**:
    - Enforced strict positive PostgreSQL readiness assertion in `HealthCheckIntegrationTests.cs` (asserts HTTP 200 OK, `status == Healthy`, and PostgreSQL check `status == Healthy` without allowing HTTP 503 fallback when PostgreSQL is provisioned).
    - Preserved isolated and deterministic negative database connectivity tests utilizing port 59999.
