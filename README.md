@@ -54,9 +54,11 @@ Commercial properties, universities, hospitals, and industrial facilities face s
 - [x] **TECH-001: Development Toolchain Alignment & API Security Hardening**
   - Pinned `global.json` to `.NET 10.0.100` (`latestFeature` roll-forward)
   - Migrated all projects strictly to `net10.0`
+  - Aligned .NET packages (`Microsoft.AspNetCore.OpenApi`, `Microsoft.Extensions.Hosting`, `Microsoft.AspNetCore.Mvc.Testing`) to official 10.0 releases
   - Eliminated information disclosure in `DatabaseHealthCheck` (generic safe public error messages, deep exception logs server-side)
+  - Strictly asserted positive PostgreSQL readiness in integration tests without allowing 503 fallback
   - Fully scaffolded Android and iOS platform directories in `apps/mobile`
-  - Added dedicated `flutter-ci` job and `.NET 10 SDK` setup to GitHub Actions CI pipeline
+  - Pinned Flutter SDK `3.29.0` and upgraded GitHub Actions (`actions/setup-java@v5`) in CI pipeline
 
 ### Feature Roadmap *(Clearly Marked as Planned)*
 - [ ] **FEAT-001: PostgreSQL Database Foundation** *(Planned)*

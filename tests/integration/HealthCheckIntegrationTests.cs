@@ -79,25 +79,18 @@ public class HealthCheckIntegrationTests : IClassFixture<WebApplicationFactory<P
         // Act
         var response = await client.GetAsync("/health/ready");
 
-        // In environments where PostgreSQL is available (such as CI with postgres service),
-        // verify that the readiness probe accurately reflects healthy status
-        if (response.StatusCode == HttpStatusCode.OK)
-        {
-            var content = await response.Content.ReadAsStringAsync();
-            using var jsonDoc = JsonDocument.Parse(content);
-            var root = jsonDoc.RootElement;
+        // Assert: When PostgreSQL is provisioned (e.g. in CI), assert HTTP 200 OK and Healthy status
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            Assert.Equal("Healthy", root.GetProperty("status").GetString());
-            var dbCheck = root.GetProperty("checks").EnumerateArray()
-                .FirstOrDefault(c => c.GetProperty("component").GetString() == "postgresql");
-            Assert.Equal("Healthy", dbCheck.GetProperty("status").GetString());
-            Assert.Equal("Database service is operational.", dbCheck.GetProperty("description").GetString());
-        }
-        else
-        {
-            // If DB is offline locally, it must return 503 ServiceUnavailable with safe message
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        }
+        var content = await response.Content.ReadAsStringAsync();
+        using var jsonDoc = JsonDocument.Parse(content);
+        var root = jsonDoc.RootElement;
+
+        Assert.Equal("Healthy", root.GetProperty("status").GetString());
+        var dbCheck = root.GetProperty("checks").EnumerateArray()
+            .FirstOrDefault(c => c.GetProperty("component").GetString() == "postgresql");
+        Assert.Equal("Healthy", dbCheck.GetProperty("status").GetString());
+        Assert.Equal("Database service is operational.", dbCheck.GetProperty("description").GetString());
     }
 
     [Fact]
