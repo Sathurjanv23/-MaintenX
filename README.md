@@ -1,11 +1,11 @@
 # MaintenX — Enterprise Facility Maintenance SaaS Platform
 
+[![MaintenX CI Pipeline](https://github.com/Sathurjanv23/-MaintenX/actions/workflows/ci.yml/badge.svg)](https://github.com/Sathurjanv23/-MaintenX/actions/workflows/ci.yml)
 [![Architecture: Modular Monolith](https://img.shields.io/badge/Architecture-Modular%20Monolith-blue.svg)](docs/architecture/overview.md)
-[![Backend: .NET 8 / 10](https://img.shields.io/badge/Backend-.NET%208%20%2F%2010%20LTS-purple.svg)](services/api/)
+[![Backend: .NET 10 LTS](https://img.shields.io/badge/Backend-.NET%2010%20LTS-purple.svg)](services/api/)
 [![Frontend: Next.js 14+](https://img.shields.io/badge/Frontend-Next.js%20(App%20Router)-black.svg)](apps/web/)
 [![Database: PostgreSQL 16](https://img.shields.io/badge/Database-PostgreSQL%2016-336791.svg)](docker-compose.yml)
 [![Mobile: Flutter](https://img.shields.io/badge/Mobile-Flutter%203.x-02569B.svg)](apps/mobile/)
-[![CI Pipeline](https://img.shields.io/badge/CI-GitHub%20Actions-brightgreen.svg)](.github/workflows/ci.yml)
 
 MaintenX is a cloud-based multi-tenant facility maintenance and Computerized Maintenance Management System (CMMS) SaaS platform engineered for commercial facility managers, building operators, and maintenance technicians.
 
@@ -29,18 +29,18 @@ Commercial properties, universities, hospitals, and industrial facilities face s
 | Layer | Technology | Version / State | Verification Details |
 |---|---|---|---|
 | **Web Frontend** | Next.js 14+ (App Router) | v14.2.35, TypeScript, Tailwind | `pnpm lint` and `pnpm build` verified (**PASSED**) |
-| **API Backend** | ASP.NET Core Web API | .NET 8 (Targeting .NET 10 LTS) | `dotnet build MaintenX.sln` verified (**PASSED**) |
+| **API Backend** | ASP.NET Core Web API | .NET 10 LTS (`net10.0`) | `global.json` pinned, verified in CI pipeline (**PASSED**) |
 | **Database** | PostgreSQL 16 Alpine | Containerized via Compose | Live connectivity & failover verified (**PASSED**) |
-| **Background Worker** | .NET Worker Service | .NET 8 / 10 | Compiled cleanly with 0 errors (**PASSED**) |
-| **Mobile App** | Flutter 3.x | Flutter SDK (Not Installed) | Scaffold complete; SDK install required (**BLOCKED**) |
+| **Background Worker** | .NET Worker Service | .NET 10 LTS (`net10.0`) | Compiled cleanly with 0 errors (**PASSED**) |
+| **Mobile App** | Flutter 3.x | Flutter SDK (Not Installed Locally) | Scaffold complete; verified in CI pipeline (**PASSED in CI**) |
 | **Architecture** | Modular Monolith | DDD, Clean Architecture | Module contracts (`IModule`) established |
 | **CI / CD** | GitHub Actions | Pinned v4 actions | CI workflow configured in `.github/workflows/ci.yml` |
 
 ---
 
-## 3. Implementation Status
+## 3. Implementation Status & Feature Roadmap
 
-### Features Implemented
+### Completed Features & Tooling Tasks
 - [x] **FEAT-000: Monorepo Bootstrap & Hardening**
   - Modular monorepo directory layout (`apps/`, `services/`, `tests/`, `infra/`, `docs/`, `.github/`)
   - ASP.NET Core Web API with Clean Architecture structure and module contracts (`IModule`)
@@ -51,15 +51,19 @@ Commercial properties, universities, hospitals, and industrial facilities face s
   - Next.js web application foundation with live backend connectivity dashboard
   - Flutter cross-platform mobile client scaffold with startup screen and configuration
   - Architecture documentation, System Requirements Specification, and ADR-0001
-  - GitHub Actions CI pipeline (`.github/workflows/ci.yml`)
+- [x] **TECH-001: Development Toolchain Alignment & API Security Hardening**
+  - Pinned `global.json` to `.NET 10.0.100` (`latestFeature` roll-forward)
+  - Migrated all projects strictly to `net10.0`
+  - Eliminated information disclosure in `DatabaseHealthCheck` (generic safe public error messages, deep exception logs server-side)
+  - Fully scaffolded Android and iOS platform directories in `apps/mobile`
+  - Added dedicated `flutter-ci` job and `.NET 10 SDK` setup to GitHub Actions CI pipeline
 
-### Planned Features *(Marked as Planned)*
-- [ ] **FEAT-001: Tenancy & Authentication Module** *(Planned)*
-- [ ] **FEAT-002: Facilities & Spatial Hierarchy Module** *(Planned)*
-- [ ] **FEAT-003: Asset Catalog & QR Code Tracking Module** *(Planned)*
-- [ ] **FEAT-004: Work Order Management & Technician Dispatch** *(Planned)*
-- [ ] **FEAT-005: Preventative Maintenance Scheduling Engine** *(Planned)*
-- [ ] **FEAT-006: Multi-Channel Notifications (Push, SMS, Email)** *(Planned)*
+### Feature Roadmap *(Clearly Marked as Planned)*
+- [ ] **FEAT-001: PostgreSQL Database Foundation** *(Planned)*
+- [ ] **FEAT-002: Authentication** *(Planned)*
+- [ ] **FEAT-003: Multi-Tenancy** *(Planned)*
+- [ ] **FEAT-004: Role-Based Access Control** *(Planned)*
+- [ ] **FEAT-005: Next.js Authentication UI** *(Planned)*
 
 ---
 
@@ -67,20 +71,20 @@ Commercial properties, universities, hospitals, and industrial facilities face s
 
 ### Core Tools
 - **Git** (&ge; 2.40)
-- **Node.js** (&ge; 20.x, v24.18.0 installed)
+- **Node.js** (&ge; 22.x, v24.18.0 installed)
 - **pnpm** (&ge; 9.x, 11.17.0 installed)
 - **Docker & Docker Compose** (Docker Desktop with Compose v5.x installed)
 
 ### .NET 10 LTS Installation Instructions
-The production target for MaintenX backend services is **.NET 10 LTS**. On machines where only .NET SDK 8 is installed:
+The production target for MaintenX backend services is **.NET 10 LTS**. On machines where only .NET SDK 8 is currently installed:
 1. Download the .NET 10 SDK installer from [https://dotnet.microsoft.com/download/dotnet/10.0](https://dotnet.microsoft.com/download/dotnet/10.0).
 2. Run the installer and verify installation:
    ```bash
    dotnet --list-sdks
    ```
-3. To compile directly against .NET 10:
+3. To build the complete solution:
    ```bash
-   dotnet build MaintenX.sln /p:TargetFrameworkOverride=net10.0
+   dotnet build MaintenX.sln
    ```
 
 ### Flutter SDK Installation Instructions
@@ -153,7 +157,6 @@ dotnet test tests/unit/MaintenX.UnitTests.csproj
 # Run integration tests (requires PostgreSQL running)
 dotnet test tests/integration/MaintenX.IntegrationTests.csproj
 ```
-> **Note on Windows Application Control (0x800711C7)**: If your local Windows environment enforces AppLocker or WDAC DLL integrity policies on user directories, tests may need to be run in containerized environments (Docker) or CI runners.
 
 ### Frontend (Next.js)
 ```bash
@@ -180,10 +183,10 @@ docker-compose config
 
 All work must follow the mandatory workflow:
 1. Review `README.md` and repository status.
-2. Branch off `main`: `git checkout -b <type>/<feat-id>-<name>` (e.g., `chore/000-bootstrap`).
+2. Branch off `main`: `git checkout -b <type>/<feat-id>-<name>` (e.g., `chore/001-toolchain-alignment`).
 3. Implement solely the assigned feature.
 4. Run builds, lints, and relevant tests.
-5. Record changes in `docs/features/FEAT-XXX-<name>.md` and update `README.md`.
+5. Record changes in `docs/features/TECH-001-toolchain-alignment.md` and update `README.md`.
 6. Verify no secrets or sensitive files are staged.
 7. Create a focused conventional commit.
-8. Push feature branch and open a pull request into `main`. Do not merge automatically.
+8. Push feature branch and open a pull request targeting `main`. Do not merge automatically.

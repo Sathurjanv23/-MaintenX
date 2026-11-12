@@ -4,11 +4,15 @@ using Npgsql;
 namespace MaintenX.Api.Common.Health;
 
 /// <summary>
-/// Verifies actual PostgreSQL database connectivity for readiness probes.
-/// Will accurately fail if PostgreSQL is down or unreachable.
+/// Verifies PostgreSQL database connectivity for readiness probes.
+/// Enforces API security: returns safe generic public messages to clients
+/// while recording granular exception diagnostics exclusively in server logs.
 /// </summary>
 public sealed class DatabaseHealthCheck : IHealthCheck
 {
+    private const string SafeHealthyMessage = "Database service is operational.";
+    private const string SafeUnhealthyMessage = "Database service is unavailable.";
+
     private readonly IConfiguration _configuration;
     private readonly ILogger<DatabaseHealthCheck> _logger;
 
@@ -26,12 +30,13 @@ public sealed class DatabaseHealthCheck : IHealthCheck
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
-            return HealthCheckResult.Unhealthy("PostgreSQL connection string 'DefaultConnection' is missing or empty.");
+            _logger.LogError("Database readiness check failed: 'DefaultConnection' configuration is missing or empty.");
+            return HealthCheckResult.Unhealthy(SafeUnhealthyMessage);
         }
 
         try
         {
-            // Build connection string with short connection timeout to avoid hanging health probes
+            // Use short connection timeout to prevent hanging readiness probes
             var csb = new NpgsqlConnectionStringBuilder(connectionString)
             {
                 Timeout = 3,
@@ -47,16 +52,17 @@ public sealed class DatabaseHealthCheck : IHealthCheck
 
             if (result != null && Convert.ToInt32(result) == 1)
             {
-                return HealthCheckResult.Healthy("PostgreSQL connection is healthy and responsive.");
+                return HealthCheckResult.Healthy(SafeHealthyMessage);
             }
 
-            return HealthCheckResult.Unhealthy("PostgreSQL responded with an unexpected query result.");
+            _logger.LogWarning("PostgreSQL probe executed successfully but returned unexpected result: {Result}", result);
+            return HealthCheckResult.Unhealthy(SafeUnhealthyMessage);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "PostgreSQL readiness health check failed: {ErrorMessage}", ex.Message);
-            return HealthCheckResult.Unhealthy($"PostgreSQL connection failed: {ex.Message}", ex);
+            // Security: Log full exception detail internally, never leak connection strings or DB errors to callers
+            _logger.LogError(ex, "PostgreSQL readiness probe exception: {ErrorMessage}", ex.Message);
+            return HealthCheckResult.Unhealthy(SafeUnhealthyMessage);
         }
     }
 }
-

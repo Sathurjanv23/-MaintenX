@@ -9,7 +9,7 @@ namespace MaintenX.UnitTests;
 public class DatabaseHealthCheckTests
 {
     [Fact]
-    public async Task CheckHealthAsync_WhenConnectionStringMissing_ReturnsUnhealthy()
+    public async Task CheckHealthAsync_WhenConnectionStringMissing_ReturnsSafeUnhealthyMessage()
     {
         // Arrange
         var inMemorySettings = new Dictionary<string, string?>();
@@ -29,15 +29,15 @@ public class DatabaseHealthCheckTests
         // Act
         var result = await healthCheck.CheckHealthAsync(context);
 
-        // Assert
+        // Assert - Verifies secure generic public error message
         Assert.Equal(HealthStatus.Unhealthy, result.Status);
-        Assert.Contains("missing or empty", result.Description);
+        Assert.Equal("Database service is unavailable.", result.Description);
     }
 
     [Fact]
-    public async Task CheckHealthAsync_WhenConnectionStringInvalidHost_ReturnsUnhealthyWithoutThrowing()
+    public async Task CheckHealthAsync_WhenConnectionStringInvalidHost_ReturnsSafeUnhealthyMessageWithoutLeakingDetails()
     {
-        // Arrange - point to non-routable port to ensure immediate failure
+        // Arrange - point to non-routable host to simulate DB failure
         var inMemorySettings = new Dictionary<string, string?>
         {
             { "ConnectionStrings:DefaultConnection", "Host=127.0.0.1;Port=59999;Database=fake;Username=fake;Password=fake;Timeout=1;" }
@@ -58,9 +58,10 @@ public class DatabaseHealthCheckTests
         // Act
         var result = await healthCheck.CheckHealthAsync(context);
 
-        // Assert - Readiness must accurately report Unhealthy, never falsely claiming healthy
+        // Assert - Verifies unhandled DB exceptions do not leak raw exception messages
         Assert.Equal(HealthStatus.Unhealthy, result.Status);
-        Assert.Contains("PostgreSQL connection failed", result.Description);
+        Assert.Equal("Database service is unavailable.", result.Description);
+        Assert.DoesNotContain("59999", result.Description);
+        Assert.DoesNotContain("fake", result.Description);
     }
 }
-
