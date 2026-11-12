@@ -81,11 +81,11 @@ class MaintenXStartupScreen extends StatelessWidget {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.grey.shade300),
                   ),
-                  child: Column(
+                  child: const Column(
                     children: <Widget>[
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: const <Widget>[
+                        children: <Widget>[
                           Text(
                             'Status:',
                             style: TextStyle(fontSize: 13, color: Colors.black54),
@@ -100,10 +100,10 @@ class MaintenXStartupScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      const Divider(height: 20),
+                      Divider(height: 20),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: const <Widget>[
+                        children: <Widget>[
                           Text(
                             'API Endpoint:',
                             style: TextStyle(fontSize: 13, color: Colors.black54),
