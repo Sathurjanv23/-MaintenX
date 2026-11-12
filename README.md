@@ -5,6 +5,7 @@
 [![Frontend: Next.js 14+](https://img.shields.io/badge/Frontend-Next.js%20(App%20Router)-black.svg)](apps/web/)
 [![Database: PostgreSQL 16](https://img.shields.io/badge/Database-PostgreSQL%2016-336791.svg)](docker-compose.yml)
 [![Mobile: Flutter](https://img.shields.io/badge/Mobile-Flutter%203.x-02569B.svg)](apps/mobile/)
+[![CI Pipeline](https://img.shields.io/badge/CI-GitHub%20Actions-brightgreen.svg)](.github/workflows/ci.yml)
 
 MaintenX is a cloud-based multi-tenant facility maintenance and Computerized Maintenance Management System (CMMS) SaaS platform engineered for commercial facility managers, building operators, and maintenance technicians.
 
@@ -23,33 +24,34 @@ Commercial properties, universities, hospitals, and industrial facilities face s
 
 ---
 
-## 2. Technology Stack
+## 2. Technology Stack & Verification State
 
-| Layer | Technology | Details |
-|---|---|---|
-| **Web Frontend** | Next.js 14+ (App Router) | TypeScript, Tailwind CSS, Lucide Icons, pnpm |
-| **API Backend** | ASP.NET Core Web API | .NET 8 (with .NET 10 readiness), C#, Minimal APIs & Controllers |
-| **Mobile App** | Flutter 3.x | Dart, cross-platform Android & iOS |
-| **Database** | PostgreSQL 16 Alpine | Relational storage, persistent volumes, connection pooling |
-| **Architecture** | Modular Monolith | Domain-Driven Design (DDD), Clean Architecture |
-| **Testing** | xUnit, WebApplicationFactory | Unit and integration test suites |
-| **DevOps & Infra** | Docker, Docker Compose | Containerized local environment |
+| Layer | Technology | Version / State | Verification Details |
+|---|---|---|---|
+| **Web Frontend** | Next.js 14+ (App Router) | v14.2.35, TypeScript, Tailwind | `pnpm lint` and `pnpm build` verified (**PASSED**) |
+| **API Backend** | ASP.NET Core Web API | .NET 8 (Targeting .NET 10 LTS) | `dotnet build MaintenX.sln` verified (**PASSED**) |
+| **Database** | PostgreSQL 16 Alpine | Containerized via Compose | Live connectivity & failover verified (**PASSED**) |
+| **Background Worker** | .NET Worker Service | .NET 8 / 10 | Compiled cleanly with 0 errors (**PASSED**) |
+| **Mobile App** | Flutter 3.x | Flutter SDK (Not Installed) | Scaffold complete; SDK install required (**BLOCKED**) |
+| **Architecture** | Modular Monolith | DDD, Clean Architecture | Module contracts (`IModule`) established |
+| **CI / CD** | GitHub Actions | Pinned v4 actions | CI workflow configured in `.github/workflows/ci.yml` |
 
 ---
 
 ## 3. Implementation Status
 
 ### Features Implemented
-- [x] **FEAT-000: Monorepo Bootstrap**
-  - Modular monorepo directory layout (`apps/`, `services/`, `tests/`, `infra/`, `docs/`)
+- [x] **FEAT-000: Monorepo Bootstrap & Hardening**
+  - Modular monorepo directory layout (`apps/`, `services/`, `tests/`, `infra/`, `docs/`, `.github/`)
   - ASP.NET Core Web API with Clean Architecture structure and module contracts (`IModule`)
   - Global exception handling using RFC 7807 Problem Details
   - Health check endpoints: `/health/live` (shallow probe) and `/health/ready` (PostgreSQL connectivity)
-  - PostgreSQL 16 containerization with Docker Compose and automated health check
+  - Demonstrated live PostgreSQL containerization with Docker Compose and failover recovery
   - Safe environment configuration templates (`.env.example`)
   - Next.js web application foundation with live backend connectivity dashboard
   - Flutter cross-platform mobile client scaffold with startup screen and configuration
   - Architecture documentation, System Requirements Specification, and ADR-0001
+  - GitHub Actions CI pipeline (`.github/workflows/ci.yml`)
 
 ### Planned Features *(Marked as Planned)*
 - [ ] **FEAT-001: Tenancy & Authentication Module** *(Planned)*
@@ -61,65 +63,42 @@ Commercial properties, universities, hospitals, and industrial facilities face s
 
 ---
 
-## 4. Repository Structure
+## 4. Prerequisites & Installation
 
-```
-MaintenX/
-├── apps/
-│   ├── web/                     # Next.js App Router (TypeScript, Tailwind)
-│   └── mobile/                  # Flutter cross-platform mobile client
-│
-├── services/
-│   ├── api/                     # ASP.NET Core Modular Monolith Web API
-│   │   ├── Common/              # Shared error handling, health checks, module contracts
-│   │   ├── Configuration/       # Strongly typed option models
-│   │   └── Program.cs           # Web application bootstrap
-│   └── worker/                  # Background worker service for future queues/jobs
-│
-├── tests/
-│   ├── unit/                    # xUnit unit test suite
-│   └── integration/             # WebApplicationFactory integration test suite
-│
-├── infra/
-│   └── docker/                  # Production multi-stage Dockerfiles
-│
-├── docs/
-│   ├── architecture/            # Architecture overview & Mermaid diagrams
-│   ├── adr/                     # Architectural Decision Records (ADR-0001)
-│   ├── features/                # Completed feature records
-│   └── srs/                     # System requirements specifications
-│
-├── .agents/
-│   └── rules/                   # Monorepo engineering rules
-│
-├── docker-compose.yml           # Local PostgreSQL container definition
-├── MaintenX.sln                 # Root .NET Solution file
-├── .editorconfig                # Universal code formatting rules
-├── .env.example                 # Safe development configuration template
-└── README.md                    # Primary repository documentation
-```
-
----
-
-## 5. Prerequisites
-
-Before running the project locally, ensure the following tools are installed:
+### Core Tools
 - **Git** (&ge; 2.40)
-- **.NET SDK** (&ge; 8.0, 8.0.425 installed; .NET 10 LTS compatible)
 - **Node.js** (&ge; 20.x, v24.18.0 installed)
 - **pnpm** (&ge; 9.x, 11.17.0 installed)
-- **Docker & Docker Compose** (Docker Compose v5.x installed)
-- **Flutter SDK** (&ge; 3.10.x, required for mobile execution)
+- **Docker & Docker Compose** (Docker Desktop with Compose v5.x installed)
+
+### .NET 10 LTS Installation Instructions
+The production target for MaintenX backend services is **.NET 10 LTS**. On machines where only .NET SDK 8 is installed:
+1. Download the .NET 10 SDK installer from [https://dotnet.microsoft.com/download/dotnet/10.0](https://dotnet.microsoft.com/download/dotnet/10.0).
+2. Run the installer and verify installation:
+   ```bash
+   dotnet --list-sdks
+   ```
+3. To compile directly against .NET 10:
+   ```bash
+   dotnet build MaintenX.sln /p:TargetFrameworkOverride=net10.0
+   ```
+
+### Flutter SDK Installation Instructions
+To run or develop the mobile client in `apps/mobile`:
+1. Download Flutter SDK from [https://docs.flutter.dev/get-started/install/windows](https://docs.flutter.dev/get-started/install/windows).
+2. Extract to an accessible directory (e.g. `C:\src\flutter`) and add `flutter/bin` to your system `PATH`.
+3. Install Android Studio and set up Android SDK / Command-line Tools.
+4. Verify Flutter environment:
+   ```bash
+   flutter doctor -v
+   ```
 
 ---
 
-## 6. Local Development Setup
+## 5. Local Development Setup
 
-### 1. Clone & Configure Environment
+### 1. Configure Environment
 ```bash
-git clone https://github.com/Sathurjanv23/-MaintenX.git
-cd -MaintenX
-
 # Copy example environment configuration
 cp .env.example .env
 ```
@@ -128,32 +107,31 @@ cp .env.example .env
 ```bash
 docker-compose up -d postgres
 ```
-Verify the database is accepting connections:
+Verify the container is healthy:
 ```bash
 docker-compose ps
 ```
 
 ### 3. Run ASP.NET Core Web API
 ```bash
-dotnet restore services/api/MaintenX.Api.csproj
 dotnet run --project services/api/MaintenX.Api.csproj
 ```
-The API will start at:
+Endpoints:
 - **Base URL**: `http://localhost:5000`
 - **Swagger / OpenAPI**: `http://localhost:5000/swagger`
-- **Liveness Probe**: `http://localhost:5000/health/live`
-- **Readiness Probe**: `http://localhost:5000/health/ready`
+- **Liveness Probe**: `http://localhost:5000/health/live` &rarr; HTTP 200
+- **Readiness Probe**: `http://localhost:5000/health/ready` &rarr; HTTP 200 (DB Online) / HTTP 503 (DB Offline)
 - **API Diagnostics**: `http://localhost:5000/api/v1/info`
 
 ### 4. Run Next.js Web Frontend
 ```bash
 cd apps/web
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) to view the MaintenX dashboard with live backend connectivity indicator.
+Open [http://localhost:3000](http://localhost:3000) to view the MaintenX dashboard with live backend connectivity indicators.
 
-### 5. Run Flutter Mobile App *(Requires Flutter SDK)*
+### 5. Run Flutter Mobile Client *(After Flutter SDK is installed)*
 ```bash
 cd apps/mobile
 flutter pub get
@@ -162,19 +140,20 @@ flutter run
 
 ---
 
-## 7. Testing Commands
+## 6. Testing & CI Commands
 
-### Backend (.NET API & Unit/Integration Tests)
+### Backend (.NET API & Solution)
 ```bash
-# Build entire solution
+# Build complete solution
 dotnet build MaintenX.sln
 
 # Run unit tests
 dotnet test tests/unit/MaintenX.UnitTests.csproj
 
-# Run integration tests
+# Run integration tests (requires PostgreSQL running)
 dotnet test tests/integration/MaintenX.IntegrationTests.csproj
 ```
+> **Note on Windows Application Control (0x800711C7)**: If your local Windows environment enforces AppLocker or WDAC DLL integrity policies on user directories, tests may need to be run in containerized environments (Docker) or CI runners.
 
 ### Frontend (Next.js)
 ```bash
@@ -197,7 +176,7 @@ docker-compose config
 
 ---
 
-## 8. Development & Git Workflow
+## 7. Development & Git Workflow
 
 All work must follow the mandatory workflow:
 1. Review `README.md` and repository status.
@@ -206,5 +185,5 @@ All work must follow the mandatory workflow:
 4. Run builds, lints, and relevant tests.
 5. Record changes in `docs/features/FEAT-XXX-<name>.md` and update `README.md`.
 6. Verify no secrets or sensitive files are staged.
-7. Create a single conventional commit.
+7. Create a focused conventional commit.
 8. Push feature branch and open a pull request into `main`. Do not merge automatically.
