@@ -1,0 +1,107 @@
+name: MaintenX CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'chore/**'
+      - 'feat/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-docker:
+    name: Validate Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config
+
+  backend-ci:
+    name: Backend Build & Tests (.NET)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: maintenx_dev
+          POSTGRES_USER: maintenx_app
+          POSTGRES_PASSWORD: maintenx_dev_password_change_in_prod
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maintenx_app -d maintenx_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore MaintenX.sln
+
+      - name: Build Solution
+        run: dotnet build MaintenX.sln --no-restore -c Release
+
+      - name: Run Unit Tests
+        run: dotnet test tests/unit/MaintenX.UnitTests.csproj --no-build -c Release --logger "trx;LogFileName=unit-tests.trx"
+
+      - name: Run Integration Tests
+        run: dotnet test tests/integration/MaintenX.IntegrationTests.csproj --no-build -c Release --logger "trx;LogFileName=integration-tests.trx"
+        env:
+          ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+
+  frontend-ci:
+    name: Frontend Lint & Build (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Next.js Lint
+        working-directory: apps/web
+        run: pnpm run lint
+
+      - name: Next.js Production Build
+        working-directory: apps/web
+        run: pnpm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:5000
