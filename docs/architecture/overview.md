@@ -19,7 +19,7 @@ flowchart TD
         Proxy["Reverse Proxy / Ingress<br/>(TLS Termination, Rate Limiting)"]
     end
 
-    subgraph Backend["Modular Monolith Backend (ASP.NET Core .NET 8 / 10)"]
+    subgraph Backend["Modular Monolith Backend (ASP.NET Core .NET 10 LTS)"]
         Host["API Host / Routing / DI / Middleware"]
         AuthModule["Module: Tenancy & Identity"]
         FacilityModule["Module: Facilities & Locations"]

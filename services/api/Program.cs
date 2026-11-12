@@ -86,24 +86,33 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 // -----------------------------------------------------------------------------
 // Bootstrap Diagnostic & Versioning Route
 // -----------------------------------------------------------------------------
-app.MapGet("/api/v1/info", (IHostEnvironment env) => Results.Ok(new
+app.MapGet("/api/v1/info", async (HttpContext context, IHostEnvironment env) =>
 {
-    Application = "MaintenX API",
-    Version = "1.0.0-bootstrap",
-    Environment = env.EnvironmentName,
-    TimestampUtc = DateTimeOffset.UtcNow,
-    Status = "Operational",
-    ApiVersioningConvention = "/api/v{version}/{module}/{resource}",
-    PlannedModules = new[]
+    var data = new
     {
-        "Tenancy",
-        "Facilities",
-        "Assets",
-        "WorkOrders",
-        "MaintenanceSchedules",
-        "Notifications"
-    }
-})).WithName("GetApiInfo").WithTags("System").AllowAnonymous();
+        application = "MaintenX API",
+        version = "1.0.0-bootstrap",
+        environment = env.EnvironmentName,
+        timestampUtc = DateTimeOffset.UtcNow,
+        status = "Operational",
+        apiVersioningConvention = "/api/v{version}/{module}/{resource}",
+        plannedModules = new[]
+        {
+            "Tenancy",
+            "Facilities",
+            "Assets",
+            "WorkOrders",
+            "MaintenanceSchedules",
+            "Notifications"
+        }
+    };
+    context.Response.ContentType = "application/json; charset=utf-8";
+    var options = new System.Text.Json.JsonSerializerOptions
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+    };
+    await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(data, options));
+}).WithName("GetApiInfo").WithTags("System").AllowAnonymous();
 
 app.Logger.LogInformation("MaintenX API bootstrapping in {Environment} mode", app.Environment.EnvironmentName);
 
