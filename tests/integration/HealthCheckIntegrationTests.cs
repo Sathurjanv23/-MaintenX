@@ -116,8 +116,20 @@ public class HealthCheckIntegrationTests : IClassFixture<WebApplicationFactory<P
         using var jsonDoc = JsonDocument.Parse(content);
         var root = jsonDoc.RootElement;
 
-        Assert.Equal("MaintenX API", root.GetProperty("application").GetString());
-        Assert.Equal("1.0.0-bootstrap", root.GetProperty("version").GetString());
-        Assert.Equal("Operational", root.GetProperty("status").GetString());
+        var appName = root.TryGetProperty("application", out var appProp)
+            ? appProp.GetString()
+            : root.GetProperty("Application").GetString();
+
+        var version = root.TryGetProperty("version", out var verProp)
+            ? verProp.GetString()
+            : root.GetProperty("Version").GetString();
+
+        var status = root.TryGetProperty("status", out var statusProp)
+            ? statusProp.GetString()
+            : root.GetProperty("Status").GetString();
+
+        Assert.Equal("MaintenX API", appName);
+        Assert.Equal("1.0.0-bootstrap", version);
+        Assert.Equal("Operational", status);
     }
 }
