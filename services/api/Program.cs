@@ -1,5 +1,6 @@
 using MaintenX.Api.Common.Errors;
 using MaintenX.Api.Common.Health;
+using MaintenX.Api.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.OpenApi.Models;
 
@@ -14,7 +15,10 @@ builder.Logging.AddDebug();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
-// 3. Health Checks
+// 3. PostgreSQL Persistence (EF Core 10)
+builder.Services.AddMaintenXPersistence(builder.Configuration);
+
+// 4. Health Checks
 builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("postgresql", tags: new[] { "ready", "db" });
 
