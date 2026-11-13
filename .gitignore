@@ -47,8 +47,9 @@ build/
 *.lock.d
 ios/Pods/
 ios/.symlinks/
-android/.gradle/
-android/local.properties
+.gradle/
+*.gradle/
+local.properties
 
 # Docker & Database
 postgres_data/

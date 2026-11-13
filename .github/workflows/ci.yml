@@ -32,7 +32,7 @@ jobs:
         run: docker compose config
 
   backend-ci:
-    name: Backend Build & Tests (.NET)
+    name: Backend Build & Tests (.NET 10)
     runs-on: ubuntu-latest
 
     services:
@@ -57,18 +57,18 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Restore dependencies
         run: dotnet restore MaintenX.sln
 
-      - name: Build Solution
+      - name: Build Solution (.NET 10 LTS)
         run: dotnet build MaintenX.sln --no-restore -c Release
 
       - name: Run Unit Tests
         run: dotnet test tests/unit/MaintenX.UnitTests.csproj --no-build -c Release --logger "trx;LogFileName=unit-tests.trx"
 
-      - name: Run Integration Tests
+      - name: Run Integration Tests (PostgreSQL)
         run: dotnet test tests/integration/MaintenX.IntegrationTests.csproj --no-build -c Release --logger "trx;LogFileName=integration-tests.trx"
         env:
           ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
@@ -106,3 +106,34 @@ jobs:
         env:
           NEXT_PUBLIC_API_URL: http://localhost:5000
 
+  flutter-ci:
+    name: Flutter Lint & Tests (Mobile)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.29.0'
+          cache: true
+
+      - name: Install dependencies
+        working-directory: apps/mobile
+        run: flutter pub get
+
+      - name: Flutter Analyze
+        working-directory: apps/mobile
+        run: flutter analyze
+
+      - name: Flutter Widget Tests
+        working-directory: apps/mobile
+        run: flutter test

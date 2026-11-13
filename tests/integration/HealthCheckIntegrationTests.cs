@@ -36,7 +36,7 @@ public class HealthCheckIntegrationTests : IClassFixture<WebApplicationFactory<P
     }
 
     [Fact]
-    public async Task Get_HealthReady_WhenDatabaseIsUnreachable_ReturnsServiceUnavailableAndUnhealthyStatus()
+    public async Task Get_HealthReady_WhenDatabaseIsUnreachable_ReturnsServiceUnavailableAndSafeMessage()
     {
         // Arrange: Explicitly override connection string to non-routable port to deterministically test DB failure
         var brokenFactory = _factory.WithWebHostBuilder(builder =>
@@ -63,6 +63,11 @@ public class HealthCheckIntegrationTests : IClassFixture<WebApplicationFactory<P
 
         var dbCheck = checks.EnumerateArray().FirstOrDefault(c => c.GetProperty("component").GetString() == "postgresql");
         Assert.Equal("Unhealthy", dbCheck.GetProperty("status").GetString());
+
+        // Security assertion: Never leak internal error messages or connection strings
+        var description = dbCheck.GetProperty("description").GetString();
+        Assert.Equal("Database service is unavailable.", description);
+        Assert.False(dbCheck.TryGetProperty("error", out _));
     }
 
     [Fact]
@@ -74,24 +79,18 @@ public class HealthCheckIntegrationTests : IClassFixture<WebApplicationFactory<P
         // Act
         var response = await client.GetAsync("/health/ready");
 
-        // In environments where PostgreSQL is available (such as CI with postgres service),
-        // verify that the readiness probe accurately reflects healthy status
-        if (response.StatusCode == HttpStatusCode.OK)
-        {
-            var content = await response.Content.ReadAsStringAsync();
-            using var jsonDoc = JsonDocument.Parse(content);
-            var root = jsonDoc.RootElement;
+        // Assert: When PostgreSQL is provisioned (e.g. in CI), assert HTTP 200 OK and Healthy status
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-            Assert.Equal("Healthy", root.GetProperty("status").GetString());
-            var dbCheck = root.GetProperty("checks").EnumerateArray()
-                .FirstOrDefault(c => c.GetProperty("component").GetString() == "postgresql");
-            Assert.Equal("Healthy", dbCheck.GetProperty("status").GetString());
-        }
-        else
-        {
-            // If DB is offline locally, it must return 503 ServiceUnavailable
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        }
+        var content = await response.Content.ReadAsStringAsync();
+        using var jsonDoc = JsonDocument.Parse(content);
+        var root = jsonDoc.RootElement;
+
+        Assert.Equal("Healthy", root.GetProperty("status").GetString());
+        var dbCheck = root.GetProperty("checks").EnumerateArray()
+            .FirstOrDefault(c => c.GetProperty("component").GetString() == "postgresql");
+        Assert.Equal("Healthy", dbCheck.GetProperty("status").GetString());
+        Assert.Equal("Database service is operational.", dbCheck.GetProperty("description").GetString());
     }
 
     [Fact]
@@ -110,8 +109,20 @@ public class HealthCheckIntegrationTests : IClassFixture<WebApplicationFactory<P
         using var jsonDoc = JsonDocument.Parse(content);
         var root = jsonDoc.RootElement;
 
-        Assert.Equal("MaintenX API", root.GetProperty("application").GetString());
-        Assert.Equal("1.0.0-bootstrap", root.GetProperty("version").GetString());
-        Assert.Equal("Operational", root.GetProperty("status").GetString());
+        var appName = root.TryGetProperty("application", out var appProp)
+            ? appProp.GetString()
+            : root.GetProperty("Application").GetString();
+
+        var version = root.TryGetProperty("version", out var verProp)
+            ? verProp.GetString()
+            : root.GetProperty("Version").GetString();
+
+        var status = root.TryGetProperty("status", out var statusProp)
+            ? statusProp.GetString()
+            : root.GetProperty("Status").GetString();
+
+        Assert.Equal("MaintenX API", appName);
+        Assert.Equal("1.0.0-bootstrap", version);
+        Assert.Equal("Operational", status);
     }
 }

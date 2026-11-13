@@ -4,7 +4,8 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 namespace MaintenX.Api.Common.Health;
 
 /// <summary>
-/// Writes structured JSON responses for health endpoints (/health/live and /health/ready).
+/// Formats structured JSON responses for /health/live and /health/ready endpoints.
+/// Security hardened: excludes raw exception traces and sensitive infrastructure details.
 /// </summary>
 public static class HealthCheckResponseWriter
 {
@@ -28,12 +29,10 @@ public static class HealthCheckResponseWriter
                 component = e.Key,
                 status = e.Value.Status.ToString(),
                 description = e.Value.Description,
-                durationMs = Math.Round(e.Value.Duration.TotalMilliseconds, 2),
-                error = e.Value.Exception?.Message
+                durationMs = Math.Round(e.Value.Duration.TotalMilliseconds, 2)
             })
         };
 
         await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
     }
 }
-
