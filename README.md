@@ -62,12 +62,12 @@ Commercial properties, universities, hospitals, and industrial facilities face s
 - [x] **FEAT-001: PostgreSQL Database Foundation**
   - Configured EF Core 10 LTS persistence infrastructure (`Microsoft.EntityFrameworkCore` 10.0.0, `Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.0)
   - Configured `MaintenXDbContext` with connection pooling, command timeouts, and connection resiliency (`EnableRetryOnFailure`)
-  - Implemented `MaintenXDesignTimeDbContextFactory` for safe design-time CLI migrations
+  - Implemented `MaintenXDesignTimeDbContextFactory` with fail-fast validation and zero hardcoded credentials
   - Implemented root tenant catalog entity `Tenant` in `Domain/Tenants/Tenant.cs` mapped to `platform.tenants`
-  - Enforced schema segmentation, UUID primary keys, normalized unique slug index (`ix_tenants_slug`), and lifecycle check constraints (`ck_tenants_status`)
+  - Enforced schema segmentation, UUID primary keys, normalized unique slug index (`ix_tenants_slug`), and lifecycle check constraints (`ck_tenants_status`, `ck_tenants_slug`)
   - Established optimistic concurrency control with `version` token and automatic UTC auditing
-  - Generated initial code-first migration `20261113000000_InitialDatabaseFoundation` and idempotent SQL script
-  - Implemented real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-012)
+  - Generated code-first migrations (`20261113000000_InitialDatabaseFoundation`, `20261113000001_HardenTenantSlugConstraints`) and idempotent SQL scripts
+  - Implemented isolated real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-013) executing in dedicated disposable databases (`maintenx_test_*`) protected by strict database safety guards
   - Authored comprehensive [Database Architecture Documentation](docs/architecture/database-design.md) and [ADR-0002](docs/adr/ADR-0002-postgresql-efcore.md)
 
 ### Feature Roadmap *(Clearly Marked as Planned)*

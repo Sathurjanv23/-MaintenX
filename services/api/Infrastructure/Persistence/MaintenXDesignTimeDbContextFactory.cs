@@ -21,8 +21,14 @@ public sealed class MaintenXDesignTimeDbContextFactory : IDesignTimeDbContextFac
             .AddEnvironmentVariables()
             .Build();
 
-        var connectionString = configuration.GetConnectionString("DefaultConnection")
-            ?? "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;";
+        var connectionString = configuration.GetConnectionString("DefaultConnection");
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "Design-time connection string 'DefaultConnection' was not found in configuration or environment variables. " +
+                "Please configure 'ConnectionStrings:DefaultConnection' in appsettings.Development.json or set 'ConnectionStrings__DefaultConnection'.");
+        }
 
         var optionsBuilder = new DbContextOptionsBuilder<MaintenXDbContext>();
         optionsBuilder.UseNpgsql(connectionString, npgsqlOptions =>
