@@ -63,3 +63,6 @@ MaintenX is a multi-tenant facility maintenance SaaS platform requiring relation
 - All table and column names must adhere to `snake_case`.
 - Tables must be partitioned into explicit schemas (`platform` for core multi-tenancy, and domain-specific schemas for future modules).
 - Optimistic concurrency must be enforced on mutable root entities using a version token.
+- Tenant slugs must be normalized lowercase strings conforming to `^[a-z0-9]+(-[a-z0-9]+)*$` and enforced via database check constraints (`ck_tenants_slug`).
+- Automated integration tests must run exclusively against isolated disposable databases prefixed with `maintenx_test_` and never against development or production databases.
+- Design-time factories and configuration services must fail fast if connection strings are omitted, with zero hardcoded credential fallbacks in source code.

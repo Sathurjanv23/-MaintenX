@@ -69,6 +69,8 @@ namespace MaintenX.Api.Infrastructure.Persistence.Migrations
 
                     b.ToTable("tenants", "platform", t =>
                         {
+                            t.HasCheckConstraint("ck_tenants_slug", "slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) >= 2 AND length(slug) <= 100");
+
                             t.HasCheckConstraint("ck_tenants_status", "status IN ('Active', 'Suspended', 'PendingOnboarding', 'Deactivated')");
                         });
                 });

@@ -20,19 +20,21 @@ Built the production-grade PostgreSQL persistence foundation for the MaintenX Sa
    - Integrated `Microsoft.EntityFrameworkCore` 10.0.0, `Microsoft.EntityFrameworkCore.Design` 10.0.0, and `Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.0 into `MaintenX.Api` and `MaintenX.IntegrationTests`.
    - Created `MaintenXDbContext` configured with `platform` default schema, automatic assembly configuration discovery, automatic UTC auditing (`CreatedAtUtc`, `UpdatedAtUtc`), and optimistic concurrency token increments.
    - Implemented `DatabaseServiceExtensions.AddMaintenXPersistence` with connection pooling, command timeouts, and connection resiliency (`EnableRetryOnFailure`).
-   - Implemented `MaintenXDesignTimeDbContextFactory` enabling `dotnet-ef` migration generation and inspection outside the running application host.
+   - Implemented `MaintenXDesignTimeDbContextFactory` enabling `dotnet-ef` migration generation and inspection outside the running application host, with fail-fast validation when connection strings are omitted and zero hardcoded credentials.
 2. **Foundational Tenant Catalog Entity**:
    - Defined `Tenant` aggregate root in `Domain/Tenants/Tenant.cs` and `TenantStatus` in `Domain/Tenants/TenantStatus.cs`.
-   - Mapped to `platform.tenants` with `pk_tenants`, unique index `ix_tenants_slug`, check constraint `ck_tenants_status`, and optimistic concurrency token `version` (`bigint`).
-   - Pure domain model without framework package dependencies.
+   - Mapped to `platform.tenants` with `pk_tenants`, unique index `ix_tenants_slug`, check constraints `ck_tenants_status` and `ck_tenants_slug`, and optimistic concurrency token `version` (`bigint`).
+   - Implemented domain-level slug validation and normalization (`NormalizeAndValidateSlug`), enforcing lowercase alphanumeric characters and single internal hyphens between words.
 3. **Database Migration & Idempotent SQL**:
-   - Generated initial EF Core migration `20261113000000_InitialDatabaseFoundation`.
-   - Generated and verified idempotent SQL migration script: `docs/migrations/0001_initial_database_foundation.sql`.
+   - Committed initial EF Core migration `20261113000000_InitialDatabaseFoundation`.
+   - Committed additive safe migration `20261113000001_HardenTenantSlugConstraints` adding `ck_tenants_slug`.
+   - Generated and verified idempotent SQL migration scripts: `docs/migrations/0001_initial_database_foundation.sql` and `docs/migrations/0002_harden_tenant_slug_constraints.sql`.
    - Verified that normal API startup does not silently auto-migrate the database.
-4. **Comprehensive Real PostgreSQL Integration Tests**:
-   - Implemented `DatabaseFoundationIntegrationTests` covering test cases DB-001 through DB-012.
-   - Tested against real containerized PostgreSQL 16 (not InMemory provider).
-   - Verified clean database migration from scratch using disposable temporary databases (`DB011`).
+4. **Comprehensive Real PostgreSQL Integration Tests with Strict Isolation**:
+   - Implemented `DatabaseFoundationIntegrationTests` running strictly against an isolated disposable database (`maintenx_test_*`).
+   - Created safety guard `EnsureSafeTestDatabaseName()` preventing mutation or dropping of protected databases (`maintenx_dev`, `maintenx_prod`, `maintenx_staging`, `postgres`, `template1`).
+   - Added exhaustive slug validation tests (`acme`, `ACME`, `acme-facility`, whitespace, invalid characters, length bounds, duplicate normalized values).
+   - Separated low-level driver credential protection (`DB012`) from public HTTP API disclosure protection (`DB013`).
 
 ---
 
@@ -40,18 +42,20 @@ Built the production-grade PostgreSQL persistence foundation for the MaintenX Sa
 
 | Test ID | Test Name | Target Invariant | Result |
 |---|---|---|---|
-| **DB-001** | `DB001_DbContext_ResolvesFromDependencyInjection` | DI resolution and live connection verification | **PASSED** |
-| **DB-002** | `DB002_InitialMigration_AppliesSuccessfully` | EF Core migration discovery and execution | **PASSED** |
+| **DB-001** | `DB001_DbContext_ResolvesFromDependencyInjection` | DI resolution and live connection verification on isolated test DB | **PASSED** |
+| **DB-002** | `DB002_InitialAndAdditiveMigrations_ApplySuccessfully` | EF Core migration discovery and execution (both initial & additive) | **PASSED** |
 | **DB-003** | `DB003_Tenant_CanBePersistedAndRetrieved` | Entity CRUD round-trip persistence | **PASSED** |
 | **DB-004** | `DB004_DuplicateNormalizedSlug_IsRejected` | Unique slug index and normalization constraint | **PASSED** |
-| **DB-005** | `DB005_RequiredDatabaseConstraints_AreEnforced` | Check constraint `ck_tenants_status` enforcement | **PASSED** |
+| **DB-005a**| `DB005_TenantSlug_DatabaseCheckConstraint_EnforcesInvariants` | PostgreSQL `ck_tenants_slug` regex check constraint | **PASSED** |
+| **DB-005b**| `DB005_TenantSlug_DomainFactory_EnforcesValidationAndNormalization` | Domain factory validation and normalization invariants | **PASSED** |
 | **DB-006** | `DB006_UuidKeys_PersistCorrectly` | UUID primary key persistence and retrieval | **PASSED** |
 | **DB-007** | `DB007_UtcTimestamps_RoundTripCorrectly` | Strict UTC timestamping and millisecond accuracy | **PASSED** |
 | **DB-008** | `DB008_OptimisticConcurrencyConflict_IsDetected` | Concurrency conflict detection (`DbUpdateConcurrencyException`) | **PASSED** |
 | **DB-009** | `DB009_MigrationHistory_IsPresent` | Schema history recorded in `platform.__EFMigrationsHistory` | **PASSED** |
 | **DB-010** | `DB010_ApplyingMigrationsAgain_IsSafe` | Migration re-application safety and idempotency | **PASSED** |
 | **DB-011** | `DB011_NewDatabase_CanBeInitializedUsingCommittedMigrations` | Clean database provisioning from committed migrations | **PASSED** |
-| **DB-012** | `DB012_PersistenceFailures_DoNotExposeConnectionStringsOrCredentials` | Information disclosure prevention on database failure | **PASSED** |
+| **DB-012** | `DB012_DatabaseDriverException_DoesNotExposeSensitiveCredentials` | Driver/ADO.NET exception credential sanitization | **PASSED** |
+| **DB-013** | `DB013_PublicHealthApiEndpoint_WhenDatabaseFails_DoesNotExposeConnectionDetails` | Public HTTP API error disclosure prevention | **PASSED** |
 
 ---
 

@@ -69,7 +69,8 @@ CREATE TABLE platform.tenants (
     updated_at_utc timestamp with time zone NOT NULL,
     version bigint NOT NULL,
     CONSTRAINT pk_tenants PRIMARY KEY (id),
-    CONSTRAINT ck_tenants_status CHECK (status IN ('Active', 'Suspended', 'PendingOnboarding', 'Deactivated'))
+    CONSTRAINT ck_tenants_status CHECK (status IN ('Active', 'Suspended', 'PendingOnboarding', 'Deactivated')),
+    CONSTRAINT ck_tenants_slug CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) >= 2 AND length(slug) <= 100)
 );
 
 CREATE UNIQUE INDEX ix_tenants_slug ON platform.tenants (slug);
@@ -77,7 +78,7 @@ CREATE UNIQUE INDEX ix_tenants_slug ON platform.tenants (slug);
 
 ### Field Specifications & Invariants
 - **`id` (uuid)**: Client-generated or application-generated RFC 4122 UUID (`Guid.NewGuid()`). Prevents sequential ID guessing and enables distributed offline ID generation.
-- **`slug` (varchar(100))**: Unique, normalized lowercase organization identifier (e.g. `acme-facility`, `st-marys-hospital`). Indexed uniquely via `ix_tenants_slug`.
+- **`slug` (varchar(100))**: Unique, normalized lowercase organization identifier (e.g. `acme-facility`, `st-marys-hospital`). Indexed uniquely via `ix_tenants_slug`. Enforced via check constraint `ck_tenants_slug`: lowercase alphanumeric characters and single internal hyphens, length 2 to 100 characters. Rejects whitespace, uppercase letters, leading/trailing hyphens, and symbols at the database engine level.
 - **`display_name` (varchar(200))**: Human-readable organizational name.
 - **`status` (varchar(50))**: Enforces organizational lifecycle status (`Active`, `Suspended`, `PendingOnboarding`, `Deactivated`) at both the domain model and PostgreSQL constraint levels (`ck_tenants_status`).
 - **`created_at_utc` / `updated_at_utc` (timestamptz)**: PostgreSQL `timestamp with time zone`. Automatically updated on persistence changes.
@@ -148,11 +149,29 @@ MaintenX implements an optimistic concurrency strategy using an explicit `versio
 ## 9. Security & Credential Protection
 
 - **No Secrets in Source Control**: Connection strings are resolved strictly from environment variables (`ConnectionStrings__DefaultConnection`) or local development appsettings (`appsettings.Development.json`).
-- **Sanitized Exception Reporting**: Integration test `DB012` verifies that database exceptions never leak raw connection strings or authentication passwords to public callers.
+- **Fail-Fast Configuration**: `MaintenXDesignTimeDbContextFactory` and `DatabaseServiceExtensions` strictly throw an `InvalidOperationException` if a connection string is absent, removing all hardcoded credential fallbacks.
+- **Sanitized Driver Exception Testing**: Integration test `DB012` verifies that low-level ADO.NET / Npgsql driver exceptions do not reflect or format plaintext credentials in message payloads.
+- **Sanitized Public API Response Testing**: Integration test `DB013` executes against `/health/ready` under simulated database failure to prove that public HTTP Problem Details and Health JSON payloads contain zero connection strings, credentials, hostnames, ports, or internal exception stack traces.
 
 ---
 
-## 10. Future Multi-Tenant Isolation Strategy (Roadmap for FEAT-003)
+## 10. Automated Testing & Database Isolation Strategy
+
+To ensure zero risk of data loss or schema pollution on developer (`maintenx_dev`), staging, or production databases:
+1. **Isolated Disposable Test Databases**:
+   - Each integration test execution dynamically creates an isolated database: `maintenx_test_{Guid:N}`.
+   - Migrations are applied exclusively to this disposable test database.
+   - At completion of the test suite (`DisposeAsync`), the test database is completely dropped (`DROP DATABASE ... WITH (FORCE)`).
+2. **Strict Guard Rails**:
+   - Safety guard `EnsureSafeTestDatabaseName()` verifies that database names start strictly with `maintenx_test_`.
+   - Explicitly forbids mutation or destruction of protected databases (`maintenx_dev`, `maintenx_prod`, `maintenx_staging`, `postgres`, `template1`), throwing an `InvalidOperationException` if violated.
+3. **Additive Migration Strategy**:
+   - Schema modifications are delivered via additive migrations (`20261113000000_InitialDatabaseFoundation`, followed by `20261113000001_HardenTenantSlugConstraints`).
+   - Prevents destructive schema rewrites or loss of existing migration history on existing developer environments.
+
+---
+
+## 11. Future Multi-Tenant Isolation Strategy (Roadmap for FEAT-003)
 
 While `FEAT-001` delivers the root tenant catalogue table (`platform.tenants`), future business tables (Facilities, Assets, Work Orders) will implement row-level multi-tenancy:
 - **`tenant_id` (uuid)**: Foreign key referencing `platform.tenants(id)` on every tenant-owned resource.
@@ -162,7 +181,7 @@ While `FEAT-001` delivers the root tenant catalogue table (`platform.tenants`), 
 
 ---
 
-## 11. Known Limitations & Rollback Procedures
+## 12. Known Limitations & Rollback Procedures
 
 - **Rollback Limitations**: Rolling back initial migrations in production drops tables and destroys tenant data. Prior to applying migrations in production, automated physical backups (WAL archives and snapshots) must be verified.
 - **Local Toolchain Execution**: On environments without the .NET 10 SDK installed locally, migrations and integration tests run inside Docker containers or GitHub Actions CI runners.
