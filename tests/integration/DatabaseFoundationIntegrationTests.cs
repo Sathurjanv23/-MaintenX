@@ -33,7 +33,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
     /// <summary>
     /// Strict safety guard preventing destruction or operations on non-test databases.
     /// </summary>
-    public static void EnsureSafeTestDatabaseName(string databaseName)
+    internal static void EnsureSafeTestDatabaseName(string databaseName)
     {
         if (string.IsNullOrWhiteSpace(databaseName) ||
             !databaseName.StartsWith("maintenx_test_", StringComparison.OrdinalIgnoreCase))
