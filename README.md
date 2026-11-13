@@ -30,11 +30,11 @@ Commercial properties, universities, hospitals, and industrial facilities face s
 |---|---|---|---|
 | **Web Frontend** | Next.js 14+ (App Router) | v14.2.35, TypeScript, Tailwind | `pnpm lint` and `pnpm build` verified (**PASSED**) |
 | **API Backend** | ASP.NET Core Web API | .NET 10 LTS (`net10.0`) | `global.json` pinned, verified in CI pipeline (**PASSED**) |
-| **Database** | PostgreSQL 16 Alpine | Containerized via Compose | Live connectivity & failover verified (**PASSED**) |
+| **Database & ORM** | PostgreSQL 16 / EF Core 10 | PostgreSQL 16, EF Core 10.0.0 | Npgsql provider, schema migrations & tests verified (**PASSED**) |
 | **Background Worker** | .NET Worker Service | .NET 10 LTS (`net10.0`) | Compiled cleanly with 0 errors (**PASSED**) |
 | **Mobile App** | Flutter 3.x | Flutter SDK (Not Installed Locally) | Scaffold complete; verified in CI pipeline (**PASSED in CI**) |
-| **Architecture** | Modular Monolith | DDD, Clean Architecture | Module contracts (`IModule`) established |
-| **CI / CD** | GitHub Actions | Pinned v4 actions | CI workflow configured in `.github/workflows/ci.yml` |
+| **Architecture** | Modular Monolith | DDD, Clean Architecture | Module contracts (`IModule`) & platform schema established |
+| **CI / CD** | GitHub Actions | Pinned v4/v5 actions | CI workflow configured in `.github/workflows/ci.yml` |
 
 ---
 
@@ -59,13 +59,70 @@ Commercial properties, universities, hospitals, and industrial facilities face s
   - Strictly asserted positive PostgreSQL readiness in integration tests without allowing 503 fallback
   - Fully scaffolded Android and iOS platform directories in `apps/mobile`
   - Pinned Flutter SDK `3.29.0` and upgraded GitHub Actions (`actions/setup-java@v5`) in CI pipeline
+- [x] **FEAT-001: PostgreSQL Database Foundation**
+  - Configured EF Core 10 LTS persistence infrastructure (`Microsoft.EntityFrameworkCore` 10.0.0, `Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.0)
+  - Configured `MaintenXDbContext` with connection pooling, command timeouts, and connection resiliency (`EnableRetryOnFailure`)
+  - Implemented `MaintenXDesignTimeDbContextFactory` for safe design-time CLI migrations
+  - Implemented root tenant catalog entity `Tenant` in `Domain/Tenants/Tenant.cs` mapped to `platform.tenants`
+  - Enforced schema segmentation, UUID primary keys, normalized unique slug index (`ix_tenants_slug`), and lifecycle check constraints (`ck_tenants_status`)
+  - Established optimistic concurrency control with `version` token and automatic UTC auditing
+  - Generated initial code-first migration `20261113000000_InitialDatabaseFoundation` and idempotent SQL script
+  - Implemented real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-012)
+  - Authored comprehensive [Database Architecture Documentation](docs/architecture/database-design.md) and [ADR-0002](docs/adr/ADR-0002-postgresql-efcore.md)
 
 ### Feature Roadmap *(Clearly Marked as Planned)*
-- [ ] **FEAT-001: PostgreSQL Database Foundation** *(Planned)*
 - [ ] **FEAT-002: Authentication** *(Planned)*
 - [ ] **FEAT-003: Multi-Tenancy** *(Planned)*
 - [ ] **FEAT-004: Role-Based Access Control** *(Planned)*
 - [ ] **FEAT-005: Next.js Authentication UI** *(Planned)*
+
+---
+
+## 4. Database Architecture & Operations Guide
+
+### Technology & Conventions
+- **Engine**: PostgreSQL 16 Alpine
+- **ORM**: Entity Framework Core 10 (`Npgsql.EntityFrameworkCore.PostgreSQL` 10.0.0)
+- **Schemas**: `platform` (catalog & global services), domain-specific schemas for future modules
+- **Naming**: `snake_case` tables, columns, primary keys (`pk_{table}`), indexes (`ix_{table}_{col}`), and check constraints (`ck_{table}_{property}`)
+- **Concurrency**: Optimistic locking via `version` column (`bigint`) with `DbUpdateConcurrencyException` detection
+
+### Local Database Inspection
+To inspect the running PostgreSQL database inside Docker:
+```bash
+# Connect to PostgreSQL via psql CLI
+docker exec -it maintenx-postgres psql -U maintenx_app -d maintenx_dev
+
+# Inspect platform schema tables
+\dt platform.*
+
+# Inspect platform.tenants columns and constraints
+\d+ platform.tenants
+
+# Query migration history
+SELECT * FROM platform."__EFMigrationsHistory";
+```
+
+### Migration Workflow & Commands
+Migrations are code-reviewed C# classes and compiled into idempotent SQL scripts. Application startup does **not** auto-migrate production schemas.
+
+```bash
+# Create a new migration (design-time factory resolves connection)
+dotnet ef migrations add <MigrationName> --project services/api --startup-project services/api
+
+# Apply migrations to local development database
+dotnet ef database update --project services/api --startup-project services/api
+
+# Apply idempotent SQL script directly (CI/CD / DB Administrator review)
+# On Linux/macOS:
+psql -U maintenx_app -d maintenx_dev -f docs/migrations/0001_initial_database_foundation.sql
+# On Windows (PowerShell):
+Get-Content docs/migrations/0001_initial_database_foundation.sql -Raw | docker exec -i maintenx-postgres psql -U maintenx_app -d maintenx_dev
+```
+
+### Known Limitations
+- **Tenant Isolation**: Row-level tenant isolation filters (`WHERE tenant_id = @current_tenant`) and tenant resolution middleware belong to **FEAT-003: Multi-Tenancy**. FEAT-001 implements the root tenant catalog persistence model only.
+- **No Public CRUD Endpoints**: Public tenant onboarding endpoints are deliberately omitted until authentication and authorization boundaries are completed in FEAT-002 and FEAT-004.
 
 ---
 
