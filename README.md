@@ -67,7 +67,7 @@ Commercial properties, universities, hospitals, and industrial facilities face s
   - Enforced schema segmentation, UUID primary keys, normalized unique slug index (`ix_tenants_slug`), and lifecycle check constraints (`ck_tenants_status`, `ck_tenants_slug`)
   - Established optimistic concurrency control with `version` token and automatic UTC auditing
   - Generated code-first migrations (`20261113000000_InitialDatabaseFoundation`, `20261113000001_HardenTenantSlugConstraints`) and idempotent SQL scripts
-  - Implemented isolated real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-013) executing in dedicated disposable databases (`maintenx_test_*`) protected by strict database safety guards
+  - Implemented isolated real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-014) executing in dedicated disposable databases (`maintenx_test_*`) protected by strict database safety guards, administrator credential separation, automatic teardown on setup failure, and automated migration upgrade testing (`DB014`)
   - Authored comprehensive [Database Architecture Documentation](docs/architecture/database-design.md) and [ADR-0002](docs/adr/ADR-0002-postgresql-efcore.md)
 
 ### Feature Roadmap *(Clearly Marked as Planned)*

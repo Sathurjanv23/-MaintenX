@@ -7,6 +7,8 @@ using MaintenX.Api.Domain.Tenants;
 using MaintenX.Api.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -53,50 +55,82 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
     public async Task InitializeAsync()
     {
         var config = _baseFactory.Services.GetRequiredService<IConfiguration>();
-        var defaultConnection = config.GetConnectionString("DefaultConnection")
+        var baseConnection = config.GetConnectionString("TestConnection")
+            ?? Environment.GetEnvironmentVariable("ConnectionStrings__TestConnection")
+            ?? config.GetConnectionString("DefaultConnection")
             ?? Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
-            ?? "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;";
+            ?? throw new InvalidOperationException(
+                "Database integration testing requires an accessible PostgreSQL connection string configured via " +
+                "'ConnectionStrings:TestConnection', 'ConnectionStrings:DefaultConnection', or environment variables.");
 
-        var builder = new NpgsqlConnectionStringBuilder(defaultConnection);
+        var adminConnection = config.GetConnectionString("AdminConnection")
+            ?? Environment.GetEnvironmentVariable("ConnectionStrings__AdminConnection");
 
-        // Configure admin connection to the maintenance database ('postgres')
-        builder.Database = "postgres";
-        _adminConnectionString = builder.ConnectionString;
+        _adminConnectionString = !string.IsNullOrWhiteSpace(adminConnection)
+            ? adminConnection
+            : new NpgsqlConnectionStringBuilder(baseConnection) { Database = "postgres" }.ConnectionString;
 
         // Generate isolated disposable database name with strict 'maintenx_test_' prefix
         _testDbName = $"maintenx_test_{Guid.NewGuid():N}";
         EnsureSafeTestDatabaseName(_testDbName);
 
-        // Provision the clean isolated database on PostgreSQL
+        bool databaseCreated = false;
         try
         {
-            using var adminConn = new NpgsqlConnection(_adminConnectionString);
-            await adminConn.OpenAsync();
-            using var createCmd = adminConn.CreateCommand();
-            createCmd.CommandText = $"CREATE DATABASE {_testDbName};";
-            await createCmd.ExecuteNonQueryAsync();
+            // Provision the clean isolated database using admin credentials on PostgreSQL
+            using (var adminConn = new NpgsqlConnection(_adminConnectionString))
+            {
+                await adminConn.OpenAsync();
+                using var createCmd = adminConn.CreateCommand();
+                createCmd.CommandText = $"CREATE DATABASE {_testDbName};";
+                await createCmd.ExecuteNonQueryAsync();
+                databaseCreated = true;
+            }
+
+            // Build isolated connection string targeting the disposable database
+            var isolatedBuilder = new NpgsqlConnectionStringBuilder(baseConnection)
+            {
+                Database = _testDbName
+            };
+            _isolatedConnectionString = isolatedBuilder.ConnectionString;
+
+            // Reconfigure WebApplicationFactory to strictly target the isolated test database
+            _isolatedFactory = _baseFactory.WithWebHostBuilder(webBuilder =>
+            {
+                webBuilder.UseSetting("ConnectionStrings:DefaultConnection", _isolatedConnectionString);
+            });
+
+            // Apply all committed migrations to the isolated test database
+            using var scope = _isolatedFactory.Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<MaintenXDbContext>();
+            await dbContext.Database.MigrateAsync();
         }
         catch (Exception ex)
         {
+            if (databaseCreated)
+            {
+                try
+                {
+                    NpgsqlConnection.ClearAllPools();
+                    EnsureSafeTestDatabaseName(_testDbName);
+                    using var cleanupConn = new NpgsqlConnection(_adminConnectionString);
+                    await cleanupConn.OpenAsync();
+                    using var dropCmd = cleanupConn.CreateCommand();
+                    dropCmd.CommandText = $"DROP DATABASE IF EXISTS {_testDbName} WITH (FORCE);";
+                    await dropCmd.ExecuteNonQueryAsync();
+                }
+                catch (Exception cleanupEx)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to initialize isolated test database '{_testDbName}'. Immediate cleanup also failed: {cleanupEx.Message}",
+                        new AggregateException(ex, cleanupEx));
+                }
+            }
+
             throw new InvalidOperationException(
                 $"Database integration testing requires an accessible PostgreSQL instance. " +
-                $"Failed to connect or create isolated test database '{_testDbName}'. Error: {ex.Message}", ex);
+                $"Failed to connect or initialize isolated test database '{_testDbName}'. Error: {ex.Message}", ex);
         }
-
-        // Build isolated connection string targeting the disposable database
-        builder.Database = _testDbName;
-        _isolatedConnectionString = builder.ConnectionString;
-
-        // Reconfigure WebApplicationFactory to strictly target the isolated test database
-        _isolatedFactory = _baseFactory.WithWebHostBuilder(webBuilder =>
-        {
-            webBuilder.UseSetting("ConnectionStrings:DefaultConnection", _isolatedConnectionString);
-        });
-
-        // Apply all committed migrations to the isolated test database
-        using var scope = _isolatedFactory.Services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<MaintenXDbContext>();
-        await dbContext.Database.MigrateAsync();
     }
 
     public async Task DisposeAsync()
@@ -116,9 +150,10 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
                 dropCmd.CommandText = $"DROP DATABASE IF EXISTS {_testDbName} WITH (FORCE);";
                 await dropCmd.ExecuteNonQueryAsync();
             }
-            catch
+            catch (Exception ex)
             {
-                // Suppress disposal exceptions during test runner teardown
+                Console.Error.WriteLine($"[CRITICAL WARNING] Failed to drop disposable test database '{_testDbName}': {ex.Message}");
+                throw;
             }
         }
 
@@ -211,6 +246,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
     [InlineData("ACME", false)]                   // Direct SQL with uppercase violates database check constraint
     [InlineData("acme corp", false)]              // Whitespace violates slug pattern
     [InlineData(" acme", false)]                 // Leading whitespace violates pattern
+    [InlineData("acme ", false)]                 // Trailing whitespace violates pattern
     [InlineData("-acme", false)]                 // Leading hyphen violates pattern
     [InlineData("acme-", false)]                 // Trailing hyphen violates pattern
     [InlineData("acme--facility", false)]        // Consecutive hyphens violate pattern
@@ -262,21 +298,39 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         var tenant2 = Tenant.Create("acme-facility", "Acme Facility");
         Assert.Equal("acme-facility", tenant2.Slug);
 
+        var tenantMin = Tenant.Create("ab", "Minimum Length Org");
+        Assert.Equal("ab", tenantMin.Slug);
+
+        var maxSlug = new string('a', 100);
+        var tenantMax = Tenant.Create(maxSlug, "Maximum Length Org");
+        Assert.Equal(maxSlug, tenantMax.Slug);
+
         // 2. Normalization: Uppercase automatically normalized to lowercase
         var tenantUpper = Tenant.Create("ACME", "Acme Corp");
         Assert.Equal("acme", tenantUpper.Slug);
 
-        // 3. Invalid cases throw ArgumentException
+        var tenantMixed = Tenant.Create("Acme-Facility-101", "Mixed Case Org");
+        Assert.Equal("acme-facility-101", tenantMixed.Slug);
+
+        // 3. Leading and trailing whitespace must be strictly rejected
+        Assert.Throws<ArgumentException>(() => Tenant.Create(" acme", "Org"));
+        Assert.Throws<ArgumentException>(() => Tenant.Create("acme ", "Org"));
+        Assert.Throws<ArgumentException>(() => Tenant.Create(" acme ", "Org"));
+        Assert.Throws<ArgumentException>(() => Tenant.Create("\tacme", "Org"));
+        Assert.Throws<ArgumentException>(() => Tenant.Create("acme\n", "Org"));
+
+        // 4. Invalid cases throw ArgumentException
         Assert.Throws<ArgumentException>(() => Tenant.Create("   ", "Org"));
         Assert.Throws<ArgumentException>(() => Tenant.Create("", "Org"));
         Assert.Throws<ArgumentException>(() => Tenant.Create("a", "Org")); // Length < 2
         Assert.Throws<ArgumentException>(() => Tenant.Create(new string('a', 101), "Org")); // Length > 100
-        Assert.Throws<ArgumentException>(() => Tenant.Create("acme corp", "Org")); // Whitespace
+        Assert.Throws<ArgumentException>(() => Tenant.Create("acme corp", "Org")); // Internal whitespace
         Assert.Throws<ArgumentException>(() => Tenant.Create("-acme", "Org")); // Leading hyphen
         Assert.Throws<ArgumentException>(() => Tenant.Create("acme-", "Org")); // Trailing hyphen
         Assert.Throws<ArgumentException>(() => Tenant.Create("acme--corp", "Org")); // Consecutive hyphens
         Assert.Throws<ArgumentException>(() => Tenant.Create("acme@corp", "Org")); // Invalid char
         Assert.Throws<ArgumentException>(() => Tenant.Create("acme_corp", "Org")); // Underscore
+        Assert.Throws<ArgumentException>(() => Tenant.Create("acme.corp", "Org")); // Period
     }
 
     [Fact]
@@ -416,11 +470,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         var disposableDbName = "maintenx_test_init_" + Guid.NewGuid().ToString("N")[..8];
         EnsureSafeTestDatabaseName(disposableDbName);
 
-        var builder = new NpgsqlConnectionStringBuilder(_adminConnectionString);
-
-        // Connect to maintenance database to create the disposable test database
-        builder.Database = "postgres";
-        using (var adminConn = new NpgsqlConnection(builder.ConnectionString))
+        using (var adminConn = new NpgsqlConnection(_adminConnectionString))
         {
             await adminConn.OpenAsync();
             using var createCmd = adminConn.CreateCommand();
@@ -430,10 +480,13 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
 
         try
         {
-            // Act: Build DbContext targeting the clean disposable database
-            builder.Database = disposableDbName;
+            // Act: Build DbContext targeting the clean disposable database using application connection
+            var testConnBuilder = new NpgsqlConnectionStringBuilder(_isolatedConnectionString)
+            {
+                Database = disposableDbName
+            };
             var optionsBuilder = new DbContextOptionsBuilder<MaintenXDbContext>();
-            optionsBuilder.UseNpgsql(builder.ConnectionString, npgsql =>
+            optionsBuilder.UseNpgsql(testConnBuilder.ConnectionString, npgsql =>
             {
                 npgsql.MigrationsHistoryTable("__EFMigrationsHistory", MaintenXDbContext.DefaultSchema);
             });
@@ -463,12 +516,19 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
             NpgsqlConnection.ClearAllPools();
             EnsureSafeTestDatabaseName(disposableDbName);
 
-            builder.Database = "postgres";
-            using var dropConn = new NpgsqlConnection(builder.ConnectionString);
-            await dropConn.OpenAsync();
-            using var dropCmd = dropConn.CreateCommand();
-            dropCmd.CommandText = $"DROP DATABASE IF EXISTS {disposableDbName} WITH (FORCE);";
-            await dropCmd.ExecuteNonQueryAsync();
+            try
+            {
+                using var dropConn = new NpgsqlConnection(_adminConnectionString);
+                await dropConn.OpenAsync();
+                using var dropCmd = dropConn.CreateCommand();
+                dropCmd.CommandText = $"DROP DATABASE IF EXISTS {disposableDbName} WITH (FORCE);";
+                await dropCmd.ExecuteNonQueryAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[CRITICAL WARNING] Failed to drop disposable test database '{disposableDbName}': {ex.Message}");
+                throw;
+            }
         }
     }
 
@@ -530,5 +590,119 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         Assert.DoesNotContain("fake_api_user", content);
         Assert.DoesNotContain("59999", content);
         Assert.False(dbCheck.TryGetProperty("error", out _));
+    }
+
+    [Fact]
+    public async Task DB014_MigrationUpgrade_PreservesExistingDataAndAppliesSlugConstraint()
+    {
+        // Arrange: Generate unique disposable database name
+        var disposableDbName = "maintenx_test_upgrade_" + Guid.NewGuid().ToString("N")[..8];
+        EnsureSafeTestDatabaseName(disposableDbName);
+
+        using (var adminConn = new NpgsqlConnection(_adminConnectionString))
+        {
+            await adminConn.OpenAsync();
+            using var createCmd = adminConn.CreateCommand();
+            createCmd.CommandText = $"CREATE DATABASE {disposableDbName};";
+            await createCmd.ExecuteNonQueryAsync();
+        }
+
+        var testConnBuilder = new NpgsqlConnectionStringBuilder(_isolatedConnectionString)
+        {
+            Database = disposableDbName
+        };
+
+        var optionsBuilder = new DbContextOptionsBuilder<MaintenXDbContext>();
+        optionsBuilder.UseNpgsql(testConnBuilder.ConnectionString, npgsql =>
+        {
+            npgsql.MigrationsHistoryTable("__EFMigrationsHistory", MaintenXDbContext.DefaultSchema);
+        });
+
+        try
+        {
+            var initialTenantId = Guid.NewGuid();
+            var now = DateTime.UtcNow;
+
+            using (var context = new MaintenXDbContext(optionsBuilder.Options))
+            {
+                // Step 1: Apply initial migration only (20261113000000_InitialDatabaseFoundation)
+                var migrator = context.Database.GetService<IMigrator>();
+                Assert.NotNull(migrator);
+                await migrator.MigrateAsync("20261113000000_InitialDatabaseFoundation");
+
+                // Verify initial migration is applied and 0002 is not yet applied
+                var initialApplied = (await context.Database.GetAppliedMigrationsAsync()).ToList();
+                Assert.Single(initialApplied);
+                Assert.Equal("20261113000000_InitialDatabaseFoundation", initialApplied[0]);
+
+                // Step 2: Insert valid tenant under migration 0001
+                await context.Database.ExecuteSqlRawAsync(
+                    @"INSERT INTO platform.tenants (id, slug, display_name, status, created_at_utc, updated_at_utc, version)
+                      VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6});",
+                    initialTenantId, "legacy-facility-org", "Legacy Facility Org", "Active", now, now, 1L);
+            }
+
+            using (var context = new MaintenXDbContext(optionsBuilder.Options))
+            {
+                // Step 3: Upgrade to latest migration (applies 20261113000001_HardenTenantSlugConstraints)
+                await context.Database.MigrateAsync();
+
+                // Step 4: Verify migration history contains both migrations
+                var allApplied = (await context.Database.GetAppliedMigrationsAsync()).ToList();
+                Assert.Equal(2, allApplied.Count);
+                Assert.Contains("20261113000000_InitialDatabaseFoundation", allApplied);
+                Assert.Contains("20261113000001_HardenTenantSlugConstraints", allApplied);
+
+                // Step 5: Verify existing tenant data survived upgrade unmodified
+                var existingTenant = await context.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == initialTenantId);
+                Assert.NotNull(existingTenant);
+                Assert.Equal("legacy-facility-org", existingTenant.Slug);
+                Assert.Equal("Legacy Facility Org", existingTenant.DisplayName);
+
+                // Step 6: Verify the ck_tenants_slug constraint was created in PostgreSQL
+                var conn = context.Database.GetDbConnection();
+                if (conn.State != ConnectionState.Open)
+                {
+                    await conn.OpenAsync();
+                }
+
+                using var checkCmd = conn.CreateCommand();
+                checkCmd.CommandText = @"
+                    SELECT COUNT(*)
+                    FROM pg_constraint
+                    WHERE conname = 'ck_tenants_slug';";
+                var constraintCount = Convert.ToInt64(await checkCmd.ExecuteScalarAsync());
+                Assert.Equal(1L, constraintCount);
+
+                // Step 7: Verify invalid slugs are rejected by the upgraded database constraint
+                await Assert.ThrowsAsync<PostgresException>(async () =>
+                {
+                    await context.Database.ExecuteSqlRawAsync(
+                        @"INSERT INTO platform.tenants (id, slug, display_name, status, created_at_utc, updated_at_utc, version)
+                          VALUES ({0}, {1}, {2}, {3}, {4}, {5}, {6});",
+                        Guid.NewGuid(), "INVALID_SLUG_UPPERCASE", "Invalid Upper Slug", "Active", now, now, 1L);
+                });
+            }
+        }
+        finally
+        {
+            // Step 8: Safe cleanup
+            NpgsqlConnection.ClearAllPools();
+            EnsureSafeTestDatabaseName(disposableDbName);
+
+            try
+            {
+                using var dropConn = new NpgsqlConnection(_adminConnectionString);
+                await dropConn.OpenAsync();
+                using var dropCmd = dropConn.CreateCommand();
+                dropCmd.CommandText = $"DROP DATABASE IF EXISTS {disposableDbName} WITH (FORCE);";
+                await dropCmd.ExecuteNonQueryAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[CRITICAL WARNING] Failed to drop disposable test database '{disposableDbName}': {ex.Message}");
+                throw;
+            }
+        }
     }
 }

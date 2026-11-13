@@ -56,14 +56,21 @@ public sealed partial class Tenant
 
     /// <summary>
     /// Validates and normalizes an input string to conform to strict slug rules.
-    /// Invariants: Non-empty, trimmed, lowercase, 2-100 characters, lowercase alphanumeric and single hyphens,
-    /// no leading or trailing hyphens, no whitespace, no consecutive hyphens.
+    /// Invariants: Non-empty, no leading or trailing whitespace, lowercase, 2-100 characters,
+    /// lowercase alphanumeric and single hyphens, no leading or trailing hyphens, no consecutive hyphens.
     /// </summary>
     public static string NormalizeAndValidateSlug(string slug)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(slug);
 
-        var normalized = slug.Trim().ToLowerInvariant();
+        if (slug != slug.Trim())
+        {
+            throw new ArgumentException(
+                "Tenant slug must not contain leading or trailing whitespace.",
+                nameof(slug));
+        }
+
+        var normalized = slug.ToLowerInvariant();
 
         if (normalized.Length < 2 || normalized.Length > 100)
         {
