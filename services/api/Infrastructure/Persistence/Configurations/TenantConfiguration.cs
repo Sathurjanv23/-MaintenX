@@ -46,9 +46,16 @@ public sealed class TenantConfiguration : IEntityTypeConfiguration<Tenant>
             .HasConversion<string>()
             .IsRequired();
 
-        builder.ToTable(t => t.HasCheckConstraint(
-            "ck_tenants_status",
-            "status IN ('Active', 'Suspended', 'PendingOnboarding', 'Deactivated')"));
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint(
+                "ck_tenants_status",
+                "status IN ('Active', 'Suspended', 'PendingOnboarding', 'Deactivated')");
+
+            t.HasCheckConstraint(
+                "ck_tenants_slug",
+                "slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' AND length(slug) >= 2 AND length(slug) <= 100");
+        });
 
         // 6. Timestamps (UTC with time zone)
         builder.Property(t => t.CreatedAtUtc)
