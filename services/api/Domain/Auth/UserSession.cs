@@ -22,6 +22,12 @@ public sealed class UserSession
     public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>
+    /// UTC timestamp marking when the session was last actively used.
+    /// Initialized to CreatedAtUtc upon creation and updated via RecordActivity.
+    /// </summary>
+    public DateTime LastUsedAtUtc { get; private set; }
+
+    /// <summary>
     /// UTC timestamp marking absolute session expiration. The session cannot be extended beyond this boundary.
     /// </summary>
     public DateTime ExpiresAtUtc { get; private set; }
@@ -96,11 +102,45 @@ public sealed class UserSession
             Id = Guid.NewGuid(),
             UserId = userId,
             CreatedAtUtc = utcNow,
+            LastUsedAtUtc = utcNow,
             ExpiresAtUtc = utcNow.Add(absoluteLifetime),
             RevokedAtUtc = null,
             RevocationReason = null,
             Version = 1
         };
+    }
+
+    /// <summary>
+    /// Records session activity, updating the last-used timestamp and incrementing the version token.
+    /// Does NOT extend the session expiry or implement sliding expiration.
+    /// </summary>
+    /// <param name="utcNow">Current UTC timestamp.</param>
+    /// <exception cref="ArgumentException">Thrown if utcNow is not UTC or moves backwards relative to LastUsedAtUtc.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if the session is revoked or expired.</exception>
+    public void RecordActivity(DateTime utcNow)
+    {
+        if (utcNow.Kind != DateTimeKind.Utc)
+        {
+            throw new ArgumentException("Activity timestamp must be in UTC.", nameof(utcNow));
+        }
+
+        if (IsRevoked)
+        {
+            throw new InvalidOperationException($"Cannot record activity for revoked session '{Id}'.");
+        }
+
+        if (IsExpired(utcNow))
+        {
+            throw new InvalidOperationException($"Cannot record activity for expired session '{Id}'.");
+        }
+
+        if (utcNow < LastUsedAtUtc)
+        {
+            throw new ArgumentException("Activity timestamp cannot move backwards in time.", nameof(utcNow));
+        }
+
+        LastUsedAtUtc = utcNow;
+        Version++;
     }
 
     /// <summary>
@@ -151,6 +191,6 @@ public sealed class UserSession
     /// </summary>
     public override string ToString()
     {
-        return $"UserSession [Id={Id}, UserId={UserId}, ExpiresAtUtc={ExpiresAtUtc:O}, IsRevoked={IsRevoked}, Reason={RevocationReason ?? "Active"}]";
+        return $"UserSession [Id={Id}, UserId={UserId}, LastUsedAtUtc={LastUsedAtUtc:O}, ExpiresAtUtc={ExpiresAtUtc:O}, IsRevoked={IsRevoked}, Reason={RevocationReason ?? "Active"}]";
     }
 }

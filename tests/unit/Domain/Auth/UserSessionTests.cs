@@ -17,6 +17,7 @@ public class UserSessionTests
         Assert.NotEqual(Guid.Empty, session.Id);
         Assert.Equal(ValidUserId, session.UserId);
         Assert.Equal(now, session.CreatedAtUtc);
+        Assert.Equal(now, session.LastUsedAtUtc);
         Assert.Equal(now.Add(DefaultLifetime), session.ExpiresAtUtc);
         Assert.Null(session.RevokedAtUtc);
         Assert.Null(session.RevocationReason);
@@ -245,5 +246,100 @@ public class UserSessionTests
         Assert.Contains(session.Id.ToString(), repr);
         Assert.Contains(ValidUserId.ToString(), repr);
         Assert.Contains("Active", repr);
+    }
+
+    [Fact]
+    public void RecordActivity_WithValidFutureUtcTimestamp_UpdatesLastUsedAtUtcAndBumpsVersion()
+    {
+        var created = DateTime.UtcNow;
+        var session = UserSession.Create(ValidUserId, created, DefaultLifetime);
+        var initialVersion = session.Version;
+        var activityTime = created.AddMinutes(5);
+
+        session.RecordActivity(activityTime);
+
+        Assert.Equal(activityTime, session.LastUsedAtUtc);
+        Assert.Equal(created, session.CreatedAtUtc);
+        Assert.Equal(initialVersion + 1, session.Version);
+    }
+
+    [Fact]
+    public void RecordActivity_NeverExtendsExpiresAtUtc()
+    {
+        var created = DateTime.UtcNow;
+        var session = UserSession.Create(ValidUserId, created, DefaultLifetime);
+        var originalExpiry = session.ExpiresAtUtc;
+
+        session.RecordActivity(created.AddHours(2));
+
+        Assert.Equal(originalExpiry, session.ExpiresAtUtc);
+    }
+
+    [Fact]
+    public void RecordActivity_WhenTimestampMovesBackwards_ThrowsArgumentException()
+    {
+        var created = DateTime.UtcNow;
+        var session = UserSession.Create(ValidUserId, created, DefaultLifetime);
+        session.RecordActivity(created.AddMinutes(10));
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            session.RecordActivity(created.AddMinutes(5)));
+
+        Assert.Contains("backwards", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(DateTimeKind.Local)]
+    [InlineData(DateTimeKind.Unspecified)]
+    public void RecordActivity_WhenTimestampIsNotUtc_ThrowsArgumentException(DateTimeKind kind)
+    {
+        var created = DateTime.UtcNow;
+        var session = UserSession.Create(ValidUserId, created, DefaultLifetime);
+        var invalidTimestamp = DateTime.SpecifyKind(created.AddMinutes(5), kind);
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            session.RecordActivity(invalidTimestamp));
+
+        Assert.Contains("UTC", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RecordActivity_WhenSessionIsRevoked_ThrowsInvalidOperationException()
+    {
+        var created = DateTime.UtcNow;
+        var session = UserSession.Create(ValidUserId, created, DefaultLifetime);
+        session.Revoke(SessionRevocationReason.UserLogout, created.AddMinutes(1));
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            session.RecordActivity(created.AddMinutes(2)));
+
+        Assert.Contains("revoked", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RecordActivity_WhenSessionIsExpired_ThrowsInvalidOperationException()
+    {
+        var created = DateTime.UtcNow;
+        var session = UserSession.Create(ValidUserId, created, TimeSpan.FromMinutes(10));
+        var expiredTime = created.AddMinutes(15);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            session.RecordActivity(expiredTime));
+
+        Assert.Contains("expired", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RecordActivity_BumpsVersionExactlyOncePerCall()
+    {
+        var created = DateTime.UtcNow;
+        var session = UserSession.Create(ValidUserId, created, DefaultLifetime);
+        Assert.Equal(1, session.Version);
+
+        session.RecordActivity(created.AddMinutes(1));
+        Assert.Equal(2, session.Version);
+
+        session.RecordActivity(created.AddMinutes(2));
+        Assert.Equal(3, session.Version);
     }
 }

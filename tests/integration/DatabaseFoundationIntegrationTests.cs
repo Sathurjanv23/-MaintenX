@@ -795,8 +795,10 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
 
             using (var context = new MaintenXDbContext(optionsBuilder.Options))
             {
-                // Step 3: Upgrade to latest migration (applies 20261113000001_HardenTenantSlugConstraints)
-                await context.Database.MigrateAsync();
+                // Step 3: Upgrade to migration 0002 (applies 20261113000001_HardenTenantSlugConstraints)
+                var upgradeMigrator = context.Database.GetService<IMigrator>();
+                Assert.NotNull(upgradeMigrator);
+                await upgradeMigrator.MigrateAsync("20261113000001_HardenTenantSlugConstraints");
 
                 // Step 4: Verify migration history contains both migrations
                 var allApplied = (await context.Database.GetAppliedMigrationsAsync()).ToList();

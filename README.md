@@ -84,7 +84,14 @@ Commercial properties, universities, hospitals, and industrial facilities face s
     - `RefreshToken`: SHA-256 token hash storage only (raw tokens never stored), rotation lineage tracking (`ReplacedByTokenHash`), indefinite replay attack classification even post-expiry
     - `SecurityAuditEvent`: structured security audit trail with client IP, event types, and prohibited secret keywords validation
     - Comprehensive unit test suite: 47 dedicated domain unit tests (151 total passing unit tests)
-  - [ ] **T3: Persistence & EF Core Migrations** *(Planned)*
+  - [x] **T3: Persistence & EF Core Migrations**
+    - Explicit `IEntityTypeConfiguration<T>` mappings for `User`, `UserSession`, `RefreshToken`, and `SecurityAuditEvent` under the `platform` schema
+    - Case-insensitive email unique index and lowercase PostgreSQL check constraint on `platform.users`
+    - Non-cascading, append-only `platform.security_audit_events` with PostgreSQL `jsonb` serialization for structured `SecurityAuditMetadata`
+    - Foreign key cascade deletion from `User` to `UserSession` and `UserSession` to `RefreshToken`
+    - Added `LastUsedAtUtc` session activity tracking and concurrency token management
+    - Additive migration `20261114000000_AddAuthPersistenceEntities` and idempotent SQL script `0003_add_auth_persistence_entities.sql`
+    - Complete test coverage: 262 unit tests and 95 integration tests passing against PostgreSQL 16
   - [ ] **T4: Cryptography & Security Services** *(Planned)*
   - [ ] **T5: Application Auth Services & Lifecycle** *(Planned)*
   - [ ] **T6: Presentation Endpoints & OpenAPI Documentation** *(Planned)*
