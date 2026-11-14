@@ -56,11 +56,9 @@ jobs:
 
       - name: Provision restricted application role in PostgreSQL
         run: |
-          docker exec $(docker ps -q --filter ancestor=postgres:16-alpine) psql -U postgres -d postgres -c "
-            CREATE ROLE maintenx_app WITH LOGIN PASSWORD 'maintenx_ci_app_secret_pass' NOSUPERUSER NOCREATEDB NOCREATEROLE;
-            CREATE DATABASE maintenx_dev OWNER maintenx_app;
-            GRANT ALL PRIVILEGES ON DATABASE maintenx_dev TO maintenx_app;
-          "
+          docker exec $(docker ps -q --filter ancestor=postgres:16-alpine) psql -U postgres -d postgres -c "CREATE ROLE maintenx_app WITH LOGIN PASSWORD 'maintenx_ci_app_secret_pass' NOSUPERUSER NOCREATEDB NOCREATEROLE;"
+          docker exec $(docker ps -q --filter ancestor=postgres:16-alpine) psql -U postgres -d postgres -c "CREATE DATABASE maintenx_dev OWNER maintenx_app;"
+          docker exec $(docker ps -q --filter ancestor=postgres:16-alpine) psql -U postgres -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE maintenx_dev TO maintenx_app;"
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
