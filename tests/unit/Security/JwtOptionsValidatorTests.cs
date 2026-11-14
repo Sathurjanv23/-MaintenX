@@ -214,7 +214,11 @@ public class JwtOptionsValidatorTests
     [InlineData(0)]
     [InlineData(-1)]
     [InlineData(-24)]
-    public void Validate_WithZeroOrNegativeRetiredKeyRetentionHours_Fails(int hours)
+    [InlineData(1)]
+    [InlineData(12)]
+    [InlineData(23)]
+    [InlineData(48)]
+    public void Validate_WithInvalidRetiredKeyRetentionHours_Fails(int hours)
     {
         var options = new JwtOptions
         {
@@ -228,7 +232,24 @@ public class JwtOptionsValidatorTests
         var result = _validator.Validate(null, options);
 
         Assert.True(result.Failed);
-        Assert.Contains(result.Failures, f => f.Contains("retired key retention hours", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Failures, f => f.Contains("retired key retention hours", StringComparison.OrdinalIgnoreCase) && f.Contains("24"));
+    }
+
+    [Fact]
+    public void Validate_WithExactly24HoursRetiredKeyRetention_Succeeds()
+    {
+        var options = new JwtOptions
+        {
+            Issuer = "https://api.maintenx.internal",
+            Audience = "https://maintenx.internal",
+            KeyId = "active-key-1",
+            SigningKey = GenerateBase64Key(32),
+            RetiredKeyRetentionHours = 24
+        };
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
     }
 
     [Fact]

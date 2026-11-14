@@ -99,10 +99,13 @@ public class JwtKeyRingTests
     }
 
     [Fact]
-    public void KeyRing_RetiredKeyRetainedInVerificationRing_RemainsResolvableDuring24HourRetentionWindow()
+    public void KeyRing_RetiredKey_BeforeRetentionBoundary_IsValidAndCannotBePurged()
     {
-        var activeKid = "active-key-v2";
-        var retiredKid = "retired-key-v1-retained-24h";
+        var t0 = new DateTimeOffset(2026, 11, 14, 0, 0, 0, TimeSpan.Zero);
+        var timeProvider = new TestTimeProvider(t0);
+
+        var activeKid = "key-v2";
+        var retiredKid = "key-v1";
         var retiredSecret = GenerateBase64Key(32);
 
         var options = Options.Create(new JwtOptions
@@ -113,27 +116,131 @@ public class JwtKeyRingTests
             VerificationKeys = new Dictionary<string, string>
             {
                 [retiredKid] = retiredSecret
+            },
+            RetiredAtTimestamps = new Dictionary<string, DateTimeOffset>
+            {
+                [retiredKid] = t0
             }
+        });
+
+        var ring = new JwtKeyRing(options, timeProvider);
+
+        // 23 hours and 59 minutes after retirement: before 24h boundary
+        timeProvider.SetUtcNow(t0.AddHours(23).AddMinutes(59));
+
+        // 1. Key must remain resolvable for signature verification
+        Assert.True(ring.TryGetKey(retiredKid, out var key));
+        Assert.NotNull(key);
+        Assert.Equal(retiredKid, key.KeyId);
+
+        // 2. Key cannot be purged before 24 hours have elapsed
+        Assert.False(ring.CanPurgeKey(retiredKid, out var remaining));
+        Assert.True(remaining > TimeSpan.Zero);
+        Assert.False(ring.TryPurgeRetiredKey(retiredKid, out var failureReason));
+        Assert.Contains("mandatory 24-hour retention period has not elapsed", failureReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void KeyRing_RetiredKey_ExactlyAtRetentionBoundary_IsExpiredAndCanBePurged()
+    {
+        var t0 = new DateTimeOffset(2026, 11, 14, 0, 0, 0, TimeSpan.Zero);
+        var timeProvider = new TestTimeProvider(t0);
+
+        var activeKid = "key-v2";
+        var retiredKid = "key-v1";
+        var retiredSecret = GenerateBase64Key(32);
+
+        var options = Options.Create(new JwtOptions
+        {
+            KeyId = activeKid,
+            SigningKey = GenerateBase64Key(32),
+            RetiredKeyRetentionHours = 24,
+            VerificationKeys = new Dictionary<string, string>
+            {
+                [retiredKid] = retiredSecret
+            },
+            RetiredAtTimestamps = new Dictionary<string, DateTimeOffset>
+            {
+                [retiredKid] = t0
+            }
+        });
+
+        var ring = new JwtKeyRing(options, timeProvider);
+
+        // Exactly at the 24-hour retention boundary
+        timeProvider.SetUtcNow(t0.AddHours(24));
+
+        // 1. Exactly at boundary, elapsed retention equals 24 hours: key is considered expired for new verifications
+        Assert.False(ring.TryGetKey(retiredKid, out _));
+
+        // 2. Can now safely be purged from the key ring
+        Assert.True(ring.CanPurgeKey(retiredKid, out var remaining));
+        Assert.Equal(TimeSpan.Zero, remaining);
+        Assert.True(ring.TryPurgeRetiredKey(retiredKid, out var failureReason));
+        Assert.Null(failureReason);
+    }
+
+    [Fact]
+    public void KeyRing_RetiredKey_AfterRetentionBoundary_IsExpiredAndPurgedKeyIsRejected()
+    {
+        var t0 = new DateTimeOffset(2026, 11, 14, 0, 0, 0, TimeSpan.Zero);
+        var timeProvider = new TestTimeProvider(t0);
+
+        var activeKid = "key-v2";
+        var retiredKid = "key-v1";
+        var retiredSecret = GenerateBase64Key(32);
+
+        var options = Options.Create(new JwtOptions
+        {
+            KeyId = activeKid,
+            SigningKey = GenerateBase64Key(32),
+            RetiredKeyRetentionHours = 24,
+            VerificationKeys = new Dictionary<string, string>
+            {
+                [retiredKid] = retiredSecret
+            },
+            RetiredAtTimestamps = new Dictionary<string, DateTimeOffset>
+            {
+                [retiredKid] = t0
+            }
+        });
+
+        var ring = new JwtKeyRing(options, timeProvider);
+
+        // 25 hours after retirement (well past boundary)
+        timeProvider.SetUtcNow(t0.AddHours(25));
+
+        // 1. Expired key is rejected by TryGetKey
+        Assert.False(ring.TryGetKey(retiredKid, out var key));
+        Assert.Null(key);
+
+        // 2. Purge key permanently
+        Assert.True(ring.TryPurgeRetiredKey(retiredKid, out _));
+
+        // 3. Purged key is rejected
+        Assert.False(ring.TryGetKey(retiredKid, out _));
+    }
+
+    [Fact]
+    public void KeyRing_ActiveKey_CannotBeRetiredOrPurged()
+    {
+        var activeKid = "key-v1";
+        var options = Options.Create(new JwtOptions
+        {
+            KeyId = activeKid,
+            SigningKey = GenerateBase64Key(32)
         });
 
         var ring = new JwtKeyRing(options);
 
-        // Verification key is preserved and resolvable during the 24-hour retention period
-        Assert.True(ring.TryGetKey(retiredKid, out var retiredKey));
-        Assert.NotNull(retiredKey);
-        Assert.Equal(retiredKid, retiredKey.KeyId);
-
-        // Once removed after the 24-hour retention period, it is no longer resolvable
-        var optionsAfter24h = Options.Create(new JwtOptions
+        // Cannot retire the active key while it is active
+        Assert.Throws<InvalidOperationException>(() =>
         {
-            KeyId = activeKid,
-            SigningKey = options.Value.SigningKey,
-            VerificationKeys = new Dictionary<string, string>()
+            ring.RetireKey(activeKid, GenerateBase64Key(32));
         });
 
-        var ringAfterPurge = new JwtKeyRing(optionsAfter24h);
-        Assert.False(ringAfterPurge.TryGetKey(retiredKid, out var purgedKey));
-        Assert.Null(purgedKey);
+        // Cannot purge the active key
+        Assert.False(ring.TryPurgeRetiredKey(activeKid, out var failureReason));
+        Assert.Contains("Cannot purge the active signing key", failureReason);
     }
 }
-

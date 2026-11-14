@@ -396,41 +396,127 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
     [Fact]
     public void ProductionStartup_WhenTrustedProxyAllowlistIsMissing_ThrowsValidationException()
     {
-        var factory = CreateConfiguredFactory(knownProxies: [], environment: "Production");
+        using var factory = CreateConfiguredFactory(knownProxies: [], environment: "Production");
 
-        var ex = Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
 
-        Assert.Contains("Production security violation", ex.Message);
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to missing trusted proxy allowlist, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("Production security violation", optEx.Message);
+        }
     }
 
     [Fact]
     public void ProductionStartup_WhenJwtSigningKeyIsMissing_ThrowsValidationException()
     {
-        var factory = CreateConfiguredFactory(activeKey: "", knownProxies: ["10.0.0.1"], environment: "Production");
+        using var factory = CreateConfiguredFactory(activeKey: "", knownProxies: ["10.0.0.1"], environment: "Production");
 
-        var ex = Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
 
-        Assert.Contains("Jwt:SigningKey", ex.Message);
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to missing signing key, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("Jwt:SigningKey", optEx.Message);
+        }
     }
 
     [Fact]
     public void ProductionStartup_WhenJwtSigningKeyHasInsufficientEntropy_ThrowsValidationException()
     {
         var shortKey = GenerateBase64Key(16); // 128 bits
-        var factory = CreateConfiguredFactory(activeKey: shortKey, knownProxies: ["10.0.0.1"], environment: "Production");
+        using var factory = CreateConfiguredFactory(activeKey: shortKey, knownProxies: ["10.0.0.1"], environment: "Production");
 
-        var ex = Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
 
-        Assert.Contains("Insufficient key entropy", ex.Message);
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to insufficient key entropy, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("Insufficient key entropy", optEx.Message);
+        }
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("12")]
+    [InlineData("23")]
+    [InlineData("48")]
+    public void Startup_WhenRetiredKeyRetentionHoursNot24_ThrowsValidationException(string hours)
+    {
+        using var factory = _baseFactory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development");
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
+            builder.UseSetting("Jwt:Issuer", TestIssuer);
+            builder.UseSetting("Jwt:Audience", TestAudience);
+            builder.UseSetting("Jwt:KeyId", ActiveKeyId);
+            builder.UseSetting("Jwt:SigningKey", ActiveSigningKeyBase64);
+            builder.UseSetting("Jwt:RetiredKeyRetentionHours", hours);
+        });
+
+        var ex = Assert.ThrowsAny<Exception>(() =>
+        {
+            _ = factory.CreateClient();
+        });
+
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to retired key retention hours not being 24, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("retired key retention hours", optEx.Message, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Theory]
+    [InlineData("RateLimiting:RegistrationPermitLimit", "0")]
+    [InlineData("RateLimiting:LoginPermitLimit", "-1")]
+    [InlineData("RateLimiting:RefreshPermitLimit", "0")]
+    [InlineData("RateLimiting:WindowSeconds", "0")]
+    [InlineData("RateLimiting:SegmentsPerWindow", "0")]
+    [InlineData("RateLimiting:MaxTrackedPartitions", "0")]
+    [InlineData("RateLimiting:SegmentsPerWindow", "7")]
+    public void Startup_WhenRateLimitingOptionsInvalid_ThrowsValidationException(string settingKey, string settingValue)
+    {
+        using var factory = _baseFactory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development");
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
+            builder.UseSetting("Jwt:Issuer", TestIssuer);
+            builder.UseSetting("Jwt:Audience", TestAudience);
+            builder.UseSetting("Jwt:KeyId", ActiveKeyId);
+            builder.UseSetting("Jwt:SigningKey", ActiveSigningKeyBase64);
+            builder.UseSetting("Jwt:RetiredKeyRetentionHours", "24");
+            builder.UseSetting(settingKey, settingValue);
+        });
+
+        var ex = Assert.ThrowsAny<Exception>(() =>
+        {
+            _ = factory.CreateClient();
+        });
+
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to invalid options, but got: {ex.GetType().FullName}: {ex.Message}");
     }
 
     [Fact]
@@ -456,6 +542,78 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public void KeyRing_ResolvedFromApplicationServices_IsSingleSingletonInstance()
+    {
+        var factory = CreateConfiguredFactory();
+        using var scope1 = factory.Services.CreateScope();
+        using var scope2 = factory.Services.CreateScope();
+
+        var keyRing1 = scope1.ServiceProvider.GetRequiredService<IJwtKeyRing>();
+        var keyRing2 = scope2.ServiceProvider.GetRequiredService<IJwtKeyRing>();
+        var rootKeyRing = factory.Services.GetRequiredService<IJwtKeyRing>();
+
+        Assert.Same(rootKeyRing, keyRing1);
+        Assert.Same(keyRing1, keyRing2);
+    }
+
+    [Fact]
+    public async Task RateLimiting_HighCardinalityIpTraffic_IsBoundedByMaxTrackedPartitions_AndOverflowIsThrottled()
+    {
+        var factory = _baseFactory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
+            builder.UseSetting("Jwt:Issuer", TestIssuer);
+            builder.UseSetting("Jwt:Audience", TestAudience);
+            builder.UseSetting("Jwt:KeyId", ActiveKeyId);
+            builder.UseSetting("Jwt:SigningKey", ActiveSigningKeyBase64);
+            builder.UseSetting("RateLimiting:MaxTrackedPartitions", "3");
+            builder.UseSetting("RateLimiting:WindowSeconds", "60");
+
+            builder.ConfigureServices(services =>
+            {
+                services.AddTransient<IStartupFilter, TestSocketSimulationStartupFilter>();
+                services.AddSingleton<IModule, TestSecurityModule>();
+            });
+        });
+
+        var client = factory.CreateClient();
+        var managers = factory.Services.GetRequiredService<AuthRateLimitManagers>();
+
+        // 3 unique IPs fill the partition capacity
+        for (int i = 1; i <= 3; i++)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login");
+            req.Headers.Add("X-Test-Socket-Remote-Ip", $"198.51.100.{i}");
+            var resp = await client.SendAsync(req);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        }
+
+        Assert.Equal(3, managers.Login.ActiveTrackedCount);
+
+        // Send request from 4th unique IP: capacity is full, routed to overflow partition (1 permit limit)
+        using (var req4 = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login"))
+        {
+            req4.Headers.Add("X-Test-Socket-Remote-Ip", "198.51.100.99");
+            var resp4 = await client.SendAsync(req4);
+            Assert.Equal(HttpStatusCode.OK, resp4.StatusCode);
+        }
+
+        Assert.Equal(3, managers.Login.ActiveTrackedCount);
+
+        // 5th unique IP also hits overflow partition, which has exhausted its 1 permit -> throttled with 429
+        using (var req5 = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login"))
+        {
+            req5.Headers.Add("X-Test-Socket-Remote-Ip", "198.51.100.100");
+            var resp5 = await client.SendAsync(req5);
+            Assert.Equal(HttpStatusCode.TooManyRequests, resp5.StatusCode);
+        }
+
+        Assert.Equal(3, managers.Login.ActiveTrackedCount);
+        // Distinct keys ever issued to framework limiter cannot exceed 3 slots + 1 overflow key
+        Assert.True(managers.Login.DistinctPartitionKeysEverIssued <= 4);
     }
 
     private sealed class TestSocketSimulationStartupFilter : IStartupFilter

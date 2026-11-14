@@ -102,10 +102,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors("AllowLocalClients");
 
-// 2. Rate Limiting, Authentication, and Authorization
-app.UseRateLimiter();
-app.UseAuthentication();
-app.UseAuthorization();
+// 2. Authoritative MaintenX Security Pipeline (Rate Limiting -> Authentication -> Authorization)
+app.UseMaintenXSecurity();
 
 // -----------------------------------------------------------------------------
 // Health Check Endpoints (Anonymous & Excluded from Rate Limiting)
