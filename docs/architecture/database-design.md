@@ -148,8 +148,11 @@ MaintenX implements an optimistic concurrency strategy using an explicit `versio
 
 ## 9. Security & Credential Protection
 
-- **No Secrets in Source Control**: Connection strings are resolved strictly from environment variables (`ConnectionStrings__DefaultConnection`) or local development appsettings (`appsettings.Development.json`).
+- **No Secrets in Source Control**: Connection strings are omitted from shared base `appsettings.json`. Values are resolved strictly from environment variables (`ConnectionStrings__DefaultConnection`) or .NET User Secrets (`dotnet user-secrets set "ConnectionStrings:DefaultConnection" "..."`).
 - **Fail-Fast Configuration**: `MaintenXDesignTimeDbContextFactory` and `DatabaseServiceExtensions` strictly throw an `InvalidOperationException` if a connection string is absent, removing all hardcoded credential fallbacks.
+- **Genuine Role Separation**:
+  - **Cluster Administrator (`postgres`)**: Holds `SUPERUSER` and `CREATEDB` privileges, used exclusively via `ConnectionStrings:AdminConnection` to provision and drop isolated databases.
+  - **Application Role (`maintenx_app`)**: Restricted role with `NOSUPERUSER`, `NOCREATEDB`, and `NOCREATEROLE`. When an isolated database is provisioned, ownership is assigned to `maintenx_app` (`CREATE DATABASE ... OWNER "maintenx_app"`). Migrations and data operations execute under this restricted role.
 - **Sanitized Driver Exception Testing**: Integration test `DB012` verifies that low-level ADO.NET / Npgsql driver exceptions do not reflect or format plaintext credentials in message payloads.
 - **Sanitized Public API Response Testing**: Integration test `DB013` executes against `/health/ready` under simulated database failure to prove that public HTTP Problem Details and Health JSON payloads contain zero connection strings, credentials, hostnames, ports, or internal exception stack traces.
 
@@ -162,9 +165,13 @@ To ensure zero risk of data loss or schema pollution on developer (`maintenx_dev
    - Each integration test execution dynamically creates an isolated database: `maintenx_test_{Guid:N}`.
    - Migrations are applied exclusively to this disposable test database.
    - At completion of the test suite (`DisposeAsync`), the test database is completely dropped (`DROP DATABASE ... WITH (FORCE)`).
-2. **Strict Guard Rails**:
-   - Safety guard `EnsureSafeTestDatabaseName()` verifies that database names start strictly with `maintenx_test_`.
-   - Explicitly forbids mutation or destruction of protected databases (`maintenx_dev`, `maintenx_prod`, `maintenx_staging`, `postgres`, `template1`), throwing an `InvalidOperationException` if violated.
+2. **Strict Guard Rails & Host Allowlisting**:
+   - Safety guard `TestDatabaseGuard` enforces explicit opt-in: `TestDatabase:AllowProvisioning=true`. If not set, tests fail closed.
+   - Requires explicit `ConnectionStrings:AdminConnection` and `ConnectionStrings:TestConnection`. Refuses to fall back to `DefaultConnection`.
+   - Host allowlist verification: both connections must point to approved test hosts (`localhost`, `127.0.0.1`, `postgres`, `maintenx-postgres`, `host.docker.internal`). Unapproved or production hosts are rejected immediately.
+   - Name verification: database names must start strictly with `maintenx_test_`.
+   - Protected databases: explicitly forbids mutation or destruction of protected databases (`maintenx_dev`, `maintenx_prod`, `maintenx_staging`, `postgres`, `template1`), throwing an `InvalidOperationException` if violated.
+   - Factory disposal resilience: `_isolatedFactory` is disposed in `try/finally` even if database teardown encounters an error, and teardown errors are logged to `stderr` and rethrown.
 3. **Additive Migration Strategy**:
    - Schema modifications are delivered via additive migrations (`20261113000000_InitialDatabaseFoundation`, followed by `20261113000001_HardenTenantSlugConstraints`).
    - Prevents destructive schema rewrites or loss of existing migration history on existing developer environments.

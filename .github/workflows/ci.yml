@@ -39,13 +39,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: maintenx_dev
-          POSTGRES_USER: maintenx_app
-          POSTGRES_PASSWORD: maintenx_dev_password_change_in_prod
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: maintenx_ci_admin_secret_pass
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U maintenx_app -d maintenx_dev"
+          --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
@@ -53,6 +53,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Provision restricted application role in PostgreSQL
+        run: |
+          docker exec $(docker ps -q --filter ancestor=postgres:16-alpine) psql -U postgres -d postgres -c "CREATE ROLE maintenx_app WITH LOGIN PASSWORD 'maintenx_ci_app_secret_pass' NOSUPERUSER NOCREATEDB NOCREATEROLE;"
+          docker exec $(docker ps -q --filter ancestor=postgres:16-alpine) psql -U postgres -d postgres -c "CREATE DATABASE maintenx_dev OWNER maintenx_app;"
+          docker exec $(docker ps -q --filter ancestor=postgres:16-alpine) psql -U postgres -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE maintenx_dev TO maintenx_app;"
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
@@ -71,7 +77,11 @@ jobs:
       - name: Run Integration Tests (PostgreSQL)
         run: dotnet test tests/integration/MaintenX.IntegrationTests.csproj --no-build -c Release --logger "trx;LogFileName=integration-tests.trx"
         env:
-          ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+          ConnectionStrings__AdminConnection: "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=maintenx_ci_admin_secret_pass;"
+          ConnectionStrings__TestConnection: "Host=localhost;Port=5432;Database=postgres;Username=maintenx_app;Password=maintenx_ci_app_secret_pass;"
+          ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_ci_app_secret_pass;"
+          TestDatabase__AllowProvisioning: "true"
+          TestDatabase__AllowedHosts: "localhost;127.0.0.1;postgres"
 
   frontend-ci:
     name: Frontend Lint & Build (Next.js)

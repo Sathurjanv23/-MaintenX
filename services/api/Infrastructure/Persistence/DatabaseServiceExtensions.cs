@@ -13,8 +13,13 @@ public static class DatabaseServiceExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        var connectionString = configuration.GetConnectionString("DefaultConnection")
-            ?? throw new InvalidOperationException("Connection string 'DefaultConnection' was not configured.");
+        var connectionString = configuration.GetConnectionString("DefaultConnection");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "Connection string 'DefaultConnection' was not configured. " +
+                "Please configure 'ConnectionStrings:DefaultConnection' via .NET User Secrets or environment variables.");
+        }
 
         services.AddDbContext<MaintenXDbContext>(options =>
         {

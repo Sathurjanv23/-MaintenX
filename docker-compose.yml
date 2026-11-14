@@ -4,15 +4,16 @@ services:
     container_name: maintenx-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-maintenx_dev}
-      POSTGRES_USER: ${POSTGRES_USER:-maintenx_app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maintenx_dev_password_change_in_prod}
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres_local_secret_2026}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./infra/docker/init-db:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-maintenx_app} -d ${POSTGRES_DB:-maintenx_dev}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_ADMIN_USER:-postgres} -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
