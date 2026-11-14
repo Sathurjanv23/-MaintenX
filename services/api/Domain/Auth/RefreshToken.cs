@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 /// <summary>
 /// Refresh token entity storing SHA-256 hashes of issued refresh tokens.
 /// Raw refresh tokens are never persisted.
-/// Enforces rotation, replacement lineage, replay detection, and revocation invariants.
+/// Enforces rotation, replacement lineage, replay detection, expiry capping at parent session boundary, and revocation invariants.
 /// Independent of EF Core and ASP.NET Core infrastructure.
 /// </summary>
 public sealed class RefreshToken
@@ -17,39 +17,39 @@ public sealed class RefreshToken
     /// <summary>
     /// Unique UUID primary key for the refresh token record.
     /// </summary>
-    public Guid Id { get; set; }
+    public Guid Id { get; private set; }
 
     /// <summary>
     /// Foreign key identifier of the parent user session.
     /// </summary>
-    public Guid SessionId { get; set; }
+    public Guid SessionId { get; private set; }
 
     /// <summary>
     /// SHA-256 hash of the refresh token (64 lowercase hex characters).
     /// Raw token strings must NEVER be stored in this entity or the database.
     /// </summary>
-    public string TokenHash { get; set; } = string.Empty;
+    public string TokenHash { get; private set; } = string.Empty;
 
     /// <summary>
     /// UTC timestamp when the token was created.
     /// </summary>
-    public DateTime CreatedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>
-    /// UTC timestamp when the refresh token expires.
+    /// UTC timestamp when the refresh token expires. Never exceeds parent session absolute expiry.
     /// </summary>
-    public DateTime ExpiresAtUtc { get; set; }
+    public DateTime ExpiresAtUtc { get; private set; }
 
     /// <summary>
     /// UTC timestamp when the token was revoked or rotated, or null if active.
     /// </summary>
-    public DateTime? RevokedAtUtc { get; set; }
+    public DateTime? RevokedAtUtc { get; private set; }
 
     /// <summary>
     /// SHA-256 hash of the successor token issued when this token was rotated, or null if never rotated.
     /// Used to trace token lineage and detect token replay attacks.
     /// </summary>
-    public string? ReplacedByTokenHash { get; set; }
+    public string? ReplacedByTokenHash { get; private set; }
 
     /// <summary>
     /// Indicates whether the token has been replaced through rotation.
@@ -70,7 +70,7 @@ public sealed class RefreshToken
     public bool IsReplay => IsRotated;
 
     /// <summary>
-    /// Parameterless constructor required by EF Core.
+    /// Parameterless constructor required by EF Core for entity materialization.
     /// </summary>
     public RefreshToken()
     {
@@ -120,18 +120,21 @@ public sealed class RefreshToken
 
     /// <summary>
     /// Factory method for instantiating a new RefreshToken with validated invariants.
+    /// Ensures that the refresh token's expiry timestamp never exceeds its parent session's absolute expiration boundary.
     /// </summary>
     /// <param name="sessionId">Parent session ID.</param>
     /// <param name="tokenHash">SHA-256 hash of the generated refresh token.</param>
     /// <param name="utcNow">Creation timestamp in UTC.</param>
-    /// <param name="lifetime">Token duration (must be strictly positive).</param>
-    /// <returns>A validated RefreshToken instance.</returns>
-    /// <exception cref="ArgumentException">Thrown when sessionId is empty, hash is invalid, or lifetime is not positive.</exception>
+    /// <param name="lifetime">Nominal token duration (must be strictly positive).</param>
+    /// <param name="sessionExpiresAtUtc">Absolute expiration timestamp of the parent session.</param>
+    /// <returns>A validated RefreshToken instance whose expiry is capped at the parent session boundary.</returns>
+    /// <exception cref="ArgumentException">Thrown when sessionId is empty, hash is invalid, lifetime is non-positive, or session expiry is in the past.</exception>
     public static RefreshToken Create(
         Guid sessionId,
         string tokenHash,
         DateTime utcNow,
-        TimeSpan lifetime)
+        TimeSpan lifetime,
+        DateTime sessionExpiresAtUtc)
     {
         if (sessionId == Guid.Empty)
         {
@@ -145,27 +148,72 @@ public sealed class RefreshToken
             throw new ArgumentException("Refresh token lifetime must be greater than zero.", nameof(lifetime));
         }
 
+        if (sessionExpiresAtUtc <= utcNow)
+        {
+            throw new ArgumentException("Session absolute expiry must be strictly in the future relative to token creation time.", nameof(sessionExpiresAtUtc));
+        }
+
+        var nominalExpiry = utcNow.Add(lifetime);
+        var effectiveExpiry = nominalExpiry > sessionExpiresAtUtc ? sessionExpiresAtUtc : nominalExpiry;
+
         return new RefreshToken
         {
             Id = Guid.NewGuid(),
             SessionId = sessionId,
             TokenHash = validatedHash,
             CreatedAtUtc = utcNow,
-            ExpiresAtUtc = utcNow.Add(lifetime),
+            ExpiresAtUtc = effectiveExpiry,
             RevokedAtUtc = null,
             ReplacedByTokenHash = null
         };
     }
 
     /// <summary>
+    /// Convenience factory method taking a parent <see cref="UserSession"/> entity to guarantee expiry capping.
+    /// </summary>
+    /// <param name="session">Parent user session.</param>
+    /// <param name="tokenHash">SHA-256 hash of the generated refresh token.</param>
+    /// <param name="utcNow">Creation timestamp in UTC.</param>
+    /// <param name="lifetime">Nominal token duration (must be strictly positive).</param>
+    /// <returns>A validated RefreshToken instance whose expiry is capped at the parent session boundary.</returns>
+    public static RefreshToken Create(
+        UserSession session,
+        string tokenHash,
+        DateTime utcNow,
+        TimeSpan lifetime)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return Create(session.Id, tokenHash, utcNow, lifetime, session.ExpiresAtUtc);
+    }
+
+    /// <summary>
     /// Rotates the refresh token, marking it replaced by a successor token hash.
+    /// A token that is already rotated, revoked, or expired must not be rotated again.
     /// </summary>
     /// <param name="successorTokenHash">SHA-256 hash of the newly issued successor refresh token.</param>
     /// <param name="utcNow">Current UTC timestamp.</param>
     /// <exception cref="ArgumentException">Thrown when successor hash is invalid.</exception>
-    /// <exception cref="InvalidOperationException">Thrown when token has already been rotated or successor equals current token hash.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when token has already been rotated, revoked, expired, or successor equals current token hash.</exception>
     public void Rotate(string successorTokenHash, DateTime utcNow)
     {
+        if (IsRotated)
+        {
+            throw new InvalidOperationException(
+                $"Refresh token '{Id}' has already been rotated by successor token hash and cannot be rotated again.");
+        }
+
+        if (IsRevoked)
+        {
+            throw new InvalidOperationException(
+                $"Refresh token '{Id}' has already been revoked and cannot be rotated.");
+        }
+
+        if (IsExpired(utcNow))
+        {
+            throw new InvalidOperationException(
+                $"Refresh token '{Id}' has expired and cannot be rotated.");
+        }
+
         var validatedSuccessor = ValidateAndNormalizeHash(successorTokenHash);
 
         if (string.Equals(TokenHash, validatedSuccessor, StringComparison.Ordinal))
@@ -173,14 +221,8 @@ public sealed class RefreshToken
             throw new InvalidOperationException("Successor token hash cannot be identical to current token hash.");
         }
 
-        if (IsRotated)
-        {
-            throw new InvalidOperationException(
-                $"Refresh token '{Id}' has already been rotated by successor token hash and cannot be rotated again.");
-        }
-
         ReplacedByTokenHash = validatedSuccessor;
-        RevokedAtUtc ??= utcNow;
+        RevokedAtUtc = utcNow;
     }
 
     /// <summary>

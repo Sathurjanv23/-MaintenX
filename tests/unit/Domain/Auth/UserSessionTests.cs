@@ -132,6 +132,21 @@ public class UserSessionTests
     }
 
     [Fact]
+    public void DomainInvariants_UserSessionPropertiesMustNotHavePublicSetters()
+    {
+        var properties = typeof(UserSession).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        Assert.NotEmpty(properties);
+
+        foreach (var prop in properties)
+        {
+            var setMethod = prop.GetSetMethod(nonPublic: false);
+            Assert.True(
+                setMethod == null,
+                $"Property '{prop.Name}' on '{nameof(UserSession)}' must not have a public setter.");
+        }
+    }
+
+    [Fact]
     public void ToString_ReturnsSafeSummaryRepresentation()
     {
         var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);

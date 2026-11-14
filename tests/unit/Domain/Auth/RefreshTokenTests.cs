@@ -1,5 +1,6 @@
 namespace MaintenX.UnitTests.Domain.Auth;
 
+using System.Reflection;
 using MaintenX.Api.Domain.Auth;
 using Xunit;
 
@@ -14,7 +15,8 @@ public class RefreshTokenTests
     public void Create_WithValidParameters_InitializesEntityCorrectly()
     {
         var now = DateTime.UtcNow;
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime);
+        var sessionExpiresAt = now.AddDays(60);
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, sessionExpiresAt);
 
         Assert.NotEqual(Guid.Empty, token.Id);
         Assert.Equal(ValidSessionId, token.SessionId);
@@ -28,6 +30,44 @@ public class RefreshTokenTests
         Assert.False(token.IsReplay);
         Assert.True(token.IsActive(now));
         Assert.False(token.IsExpired(now));
+    }
+
+    [Fact]
+    public void Create_WhenLifetimeExceedsSessionExpiry_CapsTokenExpiryAtSessionBoundary()
+    {
+        var now = DateTime.UtcNow;
+        var sessionExpiresAt = now.AddHours(2); // Session expires in 2 hours
+        var tokenLifetime = TimeSpan.FromDays(30); // Token nominal lifetime 30 days
+
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, tokenLifetime, sessionExpiresAt);
+
+        // Effective expiry MUST be capped at the session boundary (2 hours), NOT 30 days!
+        Assert.Equal(sessionExpiresAt, token.ExpiresAtUtc);
+        Assert.False(token.IsExpired(now));
+        Assert.True(token.IsExpired(sessionExpiresAt));
+    }
+
+    [Fact]
+    public void Create_WithUserSession_CapsTokenExpiryAtSessionExpiry()
+    {
+        var now = DateTime.UtcNow;
+        var session = UserSession.Create(Guid.NewGuid(), now, TimeSpan.FromHours(4));
+        var tokenLifetime = TimeSpan.FromDays(7);
+
+        var token = RefreshToken.Create(session, ValidHash1, now, tokenLifetime);
+
+        Assert.Equal(session.ExpiresAtUtc, token.ExpiresAtUtc);
+        Assert.Equal(session.Id, token.SessionId);
+    }
+
+    [Fact]
+    public void Create_WhenSessionExpiryInPast_ThrowsArgumentException()
+    {
+        var now = DateTime.UtcNow;
+        var sessionExpiresAt = now.AddMinutes(-5);
+
+        Assert.Throws<ArgumentException>(() =>
+            RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, sessionExpiresAt));
     }
 
     [Theory]
@@ -55,8 +95,9 @@ public class RefreshTokenTests
     [Fact]
     public void Create_WithEmptySessionId_ThrowsArgumentException()
     {
+        var now = DateTime.UtcNow;
         Assert.Throws<ArgumentException>(() =>
-            RefreshToken.Create(Guid.Empty, ValidHash1, DateTime.UtcNow, DefaultLifetime));
+            RefreshToken.Create(Guid.Empty, ValidHash1, now, DefaultLifetime, now.AddDays(1)));
     }
 
     [Theory]
@@ -65,15 +106,16 @@ public class RefreshTokenTests
     [InlineData(-3600)]
     public void Create_WithNonPositiveLifetime_ThrowsArgumentException(int seconds)
     {
+        var now = DateTime.UtcNow;
         Assert.Throws<ArgumentException>(() =>
-            RefreshToken.Create(ValidSessionId, ValidHash1, DateTime.UtcNow, TimeSpan.FromSeconds(seconds)));
+            RefreshToken.Create(ValidSessionId, ValidHash1, now, TimeSpan.FromSeconds(seconds), now.AddDays(1)));
     }
 
     [Fact]
     public void IsExpired_EvaluatesAccuratelyAgainstExpiryBoundary()
     {
         var now = DateTime.UtcNow;
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, TimeSpan.FromMinutes(10));
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, TimeSpan.FromMinutes(10), now.AddHours(1));
         var expiresAt = token.ExpiresAtUtc;
 
         Assert.False(token.IsExpired(expiresAt.AddSeconds(-1)));
@@ -85,7 +127,7 @@ public class RefreshTokenTests
     public void Rotate_WithValidSuccessor_SetsSuccessorHashAndMarksRevoked()
     {
         var now = DateTime.UtcNow;
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime);
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, now.AddDays(60));
 
         token.Rotate(ValidHash2, now);
 
@@ -100,17 +142,18 @@ public class RefreshTokenTests
     [Fact]
     public void Rotate_WhenSuccessorEqualsCurrentHash_ThrowsInvalidOperationException()
     {
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, DateTime.UtcNow, DefaultLifetime);
+        var now = DateTime.UtcNow;
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, now.AddDays(60));
 
         Assert.Throws<InvalidOperationException>(() =>
-            token.Rotate(ValidHash1, DateTime.UtcNow));
+            token.Rotate(ValidHash1, now));
     }
 
     [Fact]
     public void Rotate_WhenAlreadyRotated_ThrowsInvalidOperationException()
     {
         var now = DateTime.UtcNow;
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime);
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, now.AddDays(60));
         token.Rotate(ValidHash2, now);
 
         const string thirdHash = "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a";
@@ -119,10 +162,35 @@ public class RefreshTokenTests
     }
 
     [Fact]
+    public void Rotate_WhenAlreadyRevoked_ThrowsInvalidOperationException()
+    {
+        var now = DateTime.UtcNow;
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, now.AddDays(60));
+        token.Revoke(now);
+
+        Assert.True(token.IsRevoked);
+        Assert.Throws<InvalidOperationException>(() =>
+            token.Rotate(ValidHash2, now));
+    }
+
+    [Fact]
+    public void Rotate_WhenExpired_ThrowsInvalidOperationException()
+    {
+        var now = DateTime.UtcNow;
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, TimeSpan.FromMinutes(5), now.AddDays(1));
+
+        var expiredTime = now.AddMinutes(10);
+        Assert.True(token.IsExpired(expiredTime));
+
+        Assert.Throws<InvalidOperationException>(() =>
+            token.Rotate(ValidHash2, expiredTime));
+    }
+
+    [Fact]
     public void ReplayInvariants_RotatedTokenRemainsIdentifiableAsReplayEvenAfterExpiry()
     {
         var now = DateTime.UtcNow;
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, TimeSpan.FromMinutes(5));
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, TimeSpan.FromMinutes(5), now.AddDays(1));
 
         // Rotate the token
         token.Rotate(ValidHash2, now.AddMinutes(1));
@@ -141,7 +209,7 @@ public class RefreshTokenTests
     public void ReplayInvariants_NormalRevocationWithoutRotationIsNotClassifiedAsReplay()
     {
         var now = DateTime.UtcNow;
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime);
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, now.AddDays(60));
 
         var newlyRevoked = token.Revoke(now);
 
@@ -159,7 +227,7 @@ public class RefreshTokenTests
     public void Revoke_WhenAlreadyRevoked_IsIdempotentAndReturnsFalse()
     {
         var now = DateTime.UtcNow;
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime);
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, now.AddDays(60));
 
         var firstRevoke = token.Revoke(now);
         var secondRevoke = token.Revoke(now.AddMinutes(5));
@@ -170,10 +238,26 @@ public class RefreshTokenTests
     }
 
     [Fact]
+    public void DomainInvariants_RefreshTokenPropertiesMustNotHavePublicSetters()
+    {
+        var properties = typeof(RefreshToken).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotEmpty(properties);
+
+        foreach (var prop in properties)
+        {
+            var setMethod = prop.GetSetMethod(nonPublic: false);
+            Assert.True(
+                setMethod == null,
+                $"Property '{prop.Name}' on '{nameof(RefreshToken)}' must not have a public setter.");
+        }
+    }
+
+    [Fact]
     public void ToString_StrictlyOmitsTokenHashAndReplacedByTokenHash()
     {
-        var token = RefreshToken.Create(ValidSessionId, ValidHash1, DateTime.UtcNow, DefaultLifetime);
-        token.Rotate(ValidHash2, DateTime.UtcNow);
+        var now = DateTime.UtcNow;
+        var token = RefreshToken.Create(ValidSessionId, ValidHash1, now, DefaultLifetime, now.AddDays(60));
+        token.Rotate(ValidHash2, now);
 
         var repr = token.ToString();
 
