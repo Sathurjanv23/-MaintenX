@@ -442,6 +442,7 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
     {
         var factory = _baseFactory.WithWebHostBuilder(builder =>
         {
+            builder.UseEnvironment("Development");
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
             builder.UseSetting("Jwt:Issuer", TestIssuer);
             builder.UseSetting("Jwt:Audience", TestAudience);
@@ -470,11 +471,13 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
     {
         var factory = _baseFactory.WithWebHostBuilder(builder =>
         {
+            builder.UseEnvironment("Development");
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
             builder.UseSetting("Jwt:Issuer", TestIssuer);
             builder.UseSetting("Jwt:Audience", TestAudience);
             builder.UseSetting("Jwt:KeyId", ActiveKeyId);
             builder.UseSetting("Jwt:SigningKey", ActiveSigningKeyBase64);
+            builder.UseSetting("Jwt:RetiredKeyRetentionHours", "24");
             builder.UseSetting(settingKey, settingValue);
         });
 
