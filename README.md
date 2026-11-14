@@ -78,7 +78,12 @@ Commercial properties, universities, hospitals, and industrial facilities face s
     - Trusted reverse proxy handling (`TrustedProxyOptions`) enforcing production allowlist validation (`KnownProxies`, `KnownNetworks`) to prevent client IP spoofing
     - Rate-limiting infrastructure (`AuthRateLimitPolicies`) with sliding-window policies (Registration: 5/min, Login: 10/min, Refresh: 30/min), constrained missing-IP handling, and RFC 7807 Problem Details on HTTP 429
     - Comprehensive test suite: 34 unit tests and 13 security integration tests
-  - [ ] **T2: Domain Entities & Invariants** *(Planned)*
+  - [x] **T2: Domain Entities & Invariants**
+    - `User`: normalized email, credential hash protection, security stamp rotation, rolling-window account lockout, status transitions (`PendingVerification`, `Active`, `Suspended`, `Deactivated`), optimistic concurrency versioning
+    - `UserSession`: UUID primary key, absolute expiration boundary, safe audit revocation reason, idempotent revocation
+    - `RefreshToken`: SHA-256 token hash storage only (raw tokens never stored), rotation lineage tracking (`ReplacedByTokenHash`), indefinite replay attack classification even post-expiry
+    - `SecurityAuditEvent`: structured security audit trail with client IP, event types, and prohibited secret keywords validation
+    - Comprehensive unit test suite: 47 dedicated domain unit tests (151 total passing unit tests)
   - [ ] **T3: Persistence & EF Core Migrations** *(Planned)*
   - [ ] **T4: Cryptography & Security Services** *(Planned)*
   - [ ] **T5: Application Auth Services & Lifecycle** *(Planned)*
