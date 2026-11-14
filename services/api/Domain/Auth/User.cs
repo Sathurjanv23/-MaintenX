@@ -128,7 +128,7 @@ public sealed class User
         var atIndex = normalized.IndexOf('@');
         if (atIndex <= 0 || atIndex != normalized.LastIndexOf('@') || atIndex == normalized.Length - 1)
         {
-            throw new ArgumentException($"Email address '{email}' is invalid. Must contain exactly one '@' character between local and domain parts.", nameof(email));
+            throw new ArgumentException("Email address is invalid. Must contain exactly one '@' character between local and domain parts.", nameof(email));
         }
 
         var localPart = normalized[..atIndex];
@@ -141,12 +141,12 @@ public sealed class User
 
         if (!domainPart.Contains('.') || domainPart.StartsWith('.') || domainPart.EndsWith('.'))
         {
-            throw new ArgumentException($"Email domain part '{domainPart}' is invalid. Must contain a valid top-level domain.", nameof(email));
+            throw new ArgumentException("Email domain part is invalid. Must contain a valid top-level domain.", nameof(email));
         }
 
         if (!EmailFormatRegex.IsMatch(normalized))
         {
-            throw new ArgumentException($"Email address '{email}' does not conform to valid email address syntax.", nameof(email));
+            throw new ArgumentException("Email address does not conform to valid email address syntax.", nameof(email));
         }
 
         return normalized;

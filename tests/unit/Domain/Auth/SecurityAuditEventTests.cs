@@ -198,6 +198,48 @@ public class SecurityAuditEventTests
             new SecurityAuditMetadata(detectedLineage: unapprovedLineage));
     }
 
+    [Theory]
+    [InlineData("password123456!")]
+    [InlineData("admin@maintenx.internal")]
+    [InlineData("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sensitive_payload")]
+    [InlineData("Bearer secret-token-value")]
+    [InlineData("+1-800-555-0199")]
+    public void MetadataValidation_WhenSensitiveValuesPassed_ThrowsWithoutLeakingValueInMessage(string sensitiveValue)
+    {
+        // 1. Reason
+        var reasonEx = Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(reason: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, reasonEx.Message);
+        Assert.StartsWith("Audit reason is not an approved identifier.", reasonEx.Message);
+
+        var ctorReasonEx = Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(reason: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, ctorReasonEx.Message);
+        Assert.StartsWith("Audit reason is not an approved identifier.", ctorReasonEx.Message);
+
+        // 2. ActionTaken
+        var actionEx = Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(actionTaken: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, actionEx.Message);
+        Assert.StartsWith("Audit action is not an approved identifier.", actionEx.Message);
+
+        var ctorActionEx = Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(actionTaken: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, ctorActionEx.Message);
+        Assert.StartsWith("Audit action is not an approved identifier.", ctorActionEx.Message);
+
+        // 3. DetectedLineage
+        var lineageEx = Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(detectedLineage: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, lineageEx.Message);
+        Assert.StartsWith("Audit lineage identifier has an invalid format.", lineageEx.Message);
+
+        var ctorLineageEx = Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(detectedLineage: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, ctorLineageEx.Message);
+        Assert.StartsWith("Audit lineage identifier has an invalid format.", ctorLineageEx.Message);
+    }
+
     [Fact]
     public void Metadata_DirectConstructorAndFactory_EnforceIdenticalValidation()
     {

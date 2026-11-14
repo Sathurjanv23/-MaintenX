@@ -189,6 +189,22 @@ public class UserSessionTests
             session.Revoke(invalidReason!, DateTime.UtcNow));
     }
 
+    [Theory]
+    [InlineData("password123456!")]
+    [InlineData("user@maintenx.internal")]
+    [InlineData("Bearer secret-token-value")]
+    [InlineData("custom_unapproved_reason")]
+    public void Revoke_WhenSensitiveOrUnapprovedReasonPassed_ThrowsWithoutLeakingValueInMessage(string sensitiveReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            session.Revoke(sensitiveReason, DateTime.UtcNow));
+
+        Assert.DoesNotContain(sensitiveReason, ex.Message);
+        Assert.StartsWith("Session revocation reason is not approved.", ex.Message);
+    }
+
     [Fact]
     public void AllowedReasons_CannotBeMutatedThroughCastOrPublicApi()
     {

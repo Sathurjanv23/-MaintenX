@@ -194,7 +194,7 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         if (!ApprovedReasons.Contains(trimmed))
         {
             throw new ArgumentException(
-                $"Audit reason '{reason}' is not recognized. Reason must be an approved identifier: {string.Join(", ", ApprovedReasons)}.",
+                "Audit reason is not an approved identifier.",
                 nameof(reason));
         }
 
@@ -212,7 +212,7 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         if (!ApprovedActions.Contains(trimmed))
         {
             throw new ArgumentException(
-                $"Audit action '{actionTaken}' is not recognized. ActionTaken must be an approved identifier: {string.Join(", ", ApprovedActions)}.",
+                "Audit action is not an approved identifier.",
                 nameof(actionTaken));
         }
 
@@ -233,7 +233,7 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         }
 
         throw new ArgumentException(
-            $"Audit lineage identifier '{lineage}' is invalid. Must be an approved lineage constant or conform to format '^(lineage|generation|gen|depth|ancestor|predecessor|node)_[a-zA-Z0-9]{{1,32}}$'.",
+            "Audit lineage identifier has an invalid format.",
             nameof(lineage));
     }
 

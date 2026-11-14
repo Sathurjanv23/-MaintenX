@@ -71,7 +71,7 @@ public static class SessionRevocationReason
         if (!AllowedReasons.Contains(trimmed))
         {
             throw new ArgumentException(
-                $"Session revocation reason '{reason}' is not recognized. Reason must be one of the approved SessionRevocationReason values: {string.Join(", ", AllowedReasons)}.",
+                "Session revocation reason is not approved.",
                 nameof(reason));
         }
 
