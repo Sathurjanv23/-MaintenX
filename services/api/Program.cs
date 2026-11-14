@@ -1,5 +1,7 @@
 using MaintenX.Api.Common.Errors;
 using MaintenX.Api.Common.Health;
+using MaintenX.Api.Common.Modules;
+using MaintenX.Api.Common.Security;
 using MaintenX.Api.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.OpenApi.Models;
@@ -15,14 +17,17 @@ builder.Logging.AddDebug();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
-// 3. PostgreSQL Persistence (EF Core 10)
+// 3. Security Infrastructure (JWT Key Ring, Trusted Proxies, Rate Limiting)
+builder.Services.AddMaintenXSecurity(builder.Configuration, builder.Environment);
+
+// 4. PostgreSQL Persistence (EF Core 10)
 builder.Services.AddMaintenXPersistence(builder.Configuration);
 
-// 4. Health Checks
+// 5. Health Checks
 builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("postgresql", tags: new[] { "ready", "db" });
 
-// 4. OpenAPI / Swagger Documentation
+// 6. OpenAPI / Swagger Documentation
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -38,9 +43,34 @@ builder.Services.AddSwaggerGen(options =>
             Email = "engineering@maintenx.internal"
         }
     });
+
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "Bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Enter JWT Bearer token containing valid signature, issuer, and 'kid' header."
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
 });
 
-// 5. CORS policy for frontend clients (Web Next.js dev server & Mobile clients)
+// 7. CORS policy for frontend clients (Web Next.js dev server & Mobile clients)
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowLocalClients", policy =>
@@ -55,6 +85,9 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+// 1. Process trusted reverse proxy forwarded headers before any other middleware
+app.UseForwardedHeaders();
+
 app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
@@ -69,8 +102,13 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors("AllowLocalClients");
 
+// 2. Rate Limiting, Authentication, and Authorization
+app.UseRateLimiter();
+app.UseAuthentication();
+app.UseAuthorization();
+
 // -----------------------------------------------------------------------------
-// Health Check Endpoints
+// Health Check Endpoints (Anonymous & Excluded from Rate Limiting)
 // -----------------------------------------------------------------------------
 
 // Liveness probe: responds 200 Healthy if API process is alive and accepting traffic
@@ -78,14 +116,14 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
     Predicate = _ => false, // Shallow check
     ResponseWriter = HealthCheckResponseWriter.WriteResponse
-}).WithTags("Health").AllowAnonymous();
+}).WithTags("Health").AllowAnonymous().DisableRateLimiting();
 
 // Readiness probe: verifies downstream dependencies (PostgreSQL database connectivity)
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("ready"),
     ResponseWriter = HealthCheckResponseWriter.WriteResponse
-}).WithTags("Health").AllowAnonymous();
+}).WithTags("Health").AllowAnonymous().DisableRateLimiting();
 
 // -----------------------------------------------------------------------------
 // Bootstrap Diagnostic & Versioning Route
@@ -116,7 +154,15 @@ app.MapGet("/api/v1/info", async (HttpContext context, IHostEnvironment env) =>
         PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
     };
     await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(data, options));
-}).WithName("GetApiInfo").WithTags("System").AllowAnonymous();
+}).WithName("GetApiInfo").WithTags("System").AllowAnonymous().DisableRateLimiting();
+
+// -----------------------------------------------------------------------------
+// Module Endpoint Discovery & Registration
+// -----------------------------------------------------------------------------
+foreach (var module in app.Services.GetServices<IModule>())
+{
+    module.MapEndpoints(app);
+}
 
 app.Logger.LogInformation("MaintenX API bootstrapping in {Environment} mode", app.Environment.EnvironmentName);
 
