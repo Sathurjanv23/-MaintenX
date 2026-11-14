@@ -7,19 +7,20 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 /// <summary>
 /// Service and middleware registration extensions for MaintenX security infrastructure.
 /// Configures JWT options, cryptographic key ring, trusted reverse proxy forwarded headers,
-/// and per-instance endpoint rate limiting.
+/// memory-bounded rate limiting, and the authoritative security middleware pipeline.
 /// </summary>
 public static class SecurityServiceExtensions
 {
     /// <summary>
     /// Registers security configuration, JWT authentication, authorization, trusted proxy handling,
-    /// and rate limiting services into the DI container.
+    /// and rate limiting services into the DI container without creating intermediate ServiceProviders.
     /// </summary>
     public static IServiceCollection AddMaintenXSecurity(
         this IServiceCollection services,
@@ -30,7 +31,10 @@ public static class SecurityServiceExtensions
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(environment);
 
-        // 1. JWT Configuration & Key Ring
+        // 1. Core TimeProvider (Injectable for deterministic testing)
+        services.TryAddSingleton(TimeProvider.System);
+
+        // 2. JWT Configuration & Key Ring
         services.AddSingleton<IValidateOptions<JwtOptions>, JwtOptionsValidator>();
         services.AddOptions<JwtOptions>()
             .Bind(configuration.GetSection(JwtOptions.SectionName))
@@ -38,7 +42,7 @@ public static class SecurityServiceExtensions
 
         services.AddSingleton<IJwtKeyRing, JwtKeyRing>();
 
-        // 2. Trusted Proxy & Forwarded Headers Configuration
+        // 3. Trusted Proxy & Forwarded Headers Configuration
         services.AddSingleton<IValidateOptions<TrustedProxyOptions>, TrustedProxyOptionsValidator>();
         services.AddOptions<TrustedProxyOptions>()
             .Bind(configuration.GetSection(TrustedProxyOptions.SectionName))
@@ -87,82 +91,29 @@ public static class SecurityServiceExtensions
             }
         });
 
-        // 3. JWT Authentication & Bearer Token Validation
+        // 4. JWT Authentication & Bearer Token Validation (DI-aware options, zero BuildServiceProvider)
+        services.AddSingleton<IPostConfigureOptions<JwtBearerOptions>, JwtBearerPostConfigureOptions>();
         services.AddAuthentication(options =>
         {
             options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
             options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
         })
-        .AddJwtBearer(options =>
-        {
-            // Bind token validation parameters via IServiceProvider to resolve the key ring
-            var serviceProvider = services.BuildServiceProvider();
-            var jwtOptions = configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
-            var keyRing = serviceProvider.GetRequiredService<IJwtKeyRing>();
-
-            options.RequireHttpsMetadata = environment.IsProduction();
-            options.SaveToken = false; // Do not store raw tokens in HttpContext to avoid memory retention
-
-            options.TokenValidationParameters = new TokenValidationParameters
-            {
-                ValidateIssuer = true,
-                ValidIssuer = jwtOptions.Issuer,
-                ValidateAudience = true,
-                ValidAudience = jwtOptions.Audience,
-                ValidateLifetime = true,
-                RequireExpirationTime = true,
-                ValidateIssuerSigningKey = true,
-                RequireSignedTokens = true,
-                ClockSkew = TimeSpan.Zero, // Strict zero clock skew (NTP synchronized hosts)
-                ValidAlgorithms = [SecurityAlgorithms.HmacSha256], // Strictly allow only HMAC-SHA256
-                IssuerSigningKeyResolver = (token, securityToken, kid, validationParameters) =>
-                {
-                    if (string.IsNullOrWhiteSpace(kid))
-                    {
-                        throw new SecurityTokenException("Missing required 'kid' header in JWT.");
-                    }
-
-                    if (keyRing.TryGetKey(kid, out var key) && key != null)
-                    {
-                        return [key];
-                    }
-
-                    throw new SecurityTokenException($"Unknown or untrusted 'kid': '{kid}'.");
-                }
-            };
-
-            options.Events = new JwtBearerEvents
-            {
-                OnChallenge = async context =>
-                {
-                    // Suppress default challenge response if already handled
-                    context.HandleResponse();
-
-                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    context.Response.ContentType = "application/problem+json";
-
-                    var problemDetails = new ProblemDetails
-                    {
-                        Status = StatusCodes.Status401Unauthorized,
-                        Title = "Unauthorized",
-                        Detail = "Access to this resource requires valid JWT Bearer authentication.",
-                        Instance = context.Request.Path,
-                        Extensions =
-                        {
-                            ["traceId"] = context.HttpContext.TraceIdentifier,
-                            ["timestamp"] = DateTimeOffset.UtcNow
-                        }
-                    };
-
-                    await context.Response.WriteAsJsonAsync(problemDetails, options: (System.Text.Json.JsonSerializerOptions?)null, contentType: "application/problem+json", cancellationToken: context.HttpContext.RequestAborted);
-                }
-            };
-        });
+        .AddJwtBearer();
 
         services.AddAuthorization();
 
-        // 4. Rate Limiting Infrastructure
+        // 5. Memory-Bounded Rate Limiting Infrastructure
         services.Configure<RateLimitingOptions>(configuration.GetSection(RateLimitingOptions.SectionName));
+
+        services.AddSingleton<BoundedPartitionTracker>(sp =>
+        {
+            var rateOptions = sp.GetRequiredService<IOptions<RateLimitingOptions>>().Value;
+            var timeProvider = sp.GetRequiredService<TimeProvider>();
+            return new BoundedPartitionTracker(
+                rateOptions.MaxTrackedPartitions,
+                TimeSpan.FromSeconds(rateOptions.WindowSeconds),
+                timeProvider);
+        });
 
         services.AddRateLimiter(limiterOptions =>
         {
@@ -197,18 +148,25 @@ public static class SecurityServiceExtensions
                     }
                 };
 
-                await context.HttpContext.Response.WriteAsJsonAsync(problemDetails, options: (System.Text.Json.JsonSerializerOptions?)null, contentType: "application/problem+json", cancellationToken: cancellationToken);
+                await context.HttpContext.Response.WriteAsJsonAsync(
+                    problemDetails,
+                    options: (System.Text.Json.JsonSerializerOptions?)null,
+                    contentType: "application/problem+json",
+                    cancellationToken: cancellationToken);
             };
 
             // Policy: Auth.Registration (Default 5 req/min/IP)
             limiterOptions.AddPolicy(AuthRateLimitPolicies.Registration, httpContext =>
             {
+                var partitionTracker = httpContext.RequestServices.GetRequiredService<BoundedPartitionTracker>();
                 var clientIp = ResolveClientIp(httpContext);
-                if (clientIp == null)
+                var partitionKey = partitionTracker.ResolvePartitionKey("registration", clientIp);
+
+                if (partitionKey.StartsWith("unresolved_", StringComparison.Ordinal) ||
+                    partitionKey.StartsWith("overflow_", StringComparison.Ordinal))
                 {
-                    // Missing client IP: do not grant unrestricted access; assign to restricted 1-permit partition
                     return RateLimitPartition.GetFixedWindowLimiter(
-                        "unresolved_ip_registration",
+                        partitionKey,
                         _ => new FixedWindowRateLimiterOptions
                         {
                             PermitLimit = 1,
@@ -218,7 +176,7 @@ public static class SecurityServiceExtensions
                 }
 
                 return RateLimitPartition.GetSlidingWindowLimiter(
-                    $"registration_{clientIp}",
+                    partitionKey,
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.RegistrationPermitLimit,
@@ -232,11 +190,15 @@ public static class SecurityServiceExtensions
             // Policy: Auth.Login (Default 10 req/min/IP)
             limiterOptions.AddPolicy(AuthRateLimitPolicies.Login, httpContext =>
             {
+                var partitionTracker = httpContext.RequestServices.GetRequiredService<BoundedPartitionTracker>();
                 var clientIp = ResolveClientIp(httpContext);
-                if (clientIp == null)
+                var partitionKey = partitionTracker.ResolvePartitionKey("login", clientIp);
+
+                if (partitionKey.StartsWith("unresolved_", StringComparison.Ordinal) ||
+                    partitionKey.StartsWith("overflow_", StringComparison.Ordinal))
                 {
                     return RateLimitPartition.GetFixedWindowLimiter(
-                        "unresolved_ip_login",
+                        partitionKey,
                         _ => new FixedWindowRateLimiterOptions
                         {
                             PermitLimit = 1,
@@ -246,7 +208,7 @@ public static class SecurityServiceExtensions
                 }
 
                 return RateLimitPartition.GetSlidingWindowLimiter(
-                    $"login_{clientIp}",
+                    partitionKey,
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.LoginPermitLimit,
@@ -260,11 +222,15 @@ public static class SecurityServiceExtensions
             // Policy: Auth.Refresh (Default 30 req/min/IP)
             limiterOptions.AddPolicy(AuthRateLimitPolicies.Refresh, httpContext =>
             {
+                var partitionTracker = httpContext.RequestServices.GetRequiredService<BoundedPartitionTracker>();
                 var clientIp = ResolveClientIp(httpContext);
-                if (clientIp == null)
+                var partitionKey = partitionTracker.ResolvePartitionKey("refresh", clientIp);
+
+                if (partitionKey.StartsWith("unresolved_", StringComparison.Ordinal) ||
+                    partitionKey.StartsWith("overflow_", StringComparison.Ordinal))
                 {
                     return RateLimitPartition.GetFixedWindowLimiter(
-                        "unresolved_ip_refresh",
+                        partitionKey,
                         _ => new FixedWindowRateLimiterOptions
                         {
                             PermitLimit = 1,
@@ -274,7 +240,7 @@ public static class SecurityServiceExtensions
                 }
 
                 return RateLimitPartition.GetSlidingWindowLimiter(
-                    $"refresh_{clientIp}",
+                    partitionKey,
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.RefreshPermitLimit,
@@ -290,18 +256,16 @@ public static class SecurityServiceExtensions
     }
 
     /// <summary>
-    /// Configures the HTTP request pipeline with security middleware in strict dependency order:
-    /// 1. ForwardedHeaders (processes trusted proxy client IP before all downstream middleware)
-    /// 2. RateLimiter (enforces rate limits based on resolved client IP)
-    /// 3. Authentication (validates JWT Bearer tokens)
-    /// 4. Authorization (enforces security policies)
+    /// Configures the authoritative MaintenX security middleware pipeline in strict order:
+    /// 1. RateLimiter (enforces IP-based rate limiting before authentication)
+    /// 2. Authentication (validates JWT Bearer tokens)
+    /// 3. Authorization (enforces security policies)
+    /// Note: app.UseForwardedHeaders() must execute at the front of the pipeline before CORS
+    /// and exception handling so RemoteIpAddress and request scheme are resolved.
     /// </summary>
     public static WebApplication UseMaintenXSecurity(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
-
-        // Process forwarded headers first before any IP-dependent or security middleware
-        app.UseForwardedHeaders();
 
         app.UseRateLimiter();
         app.UseAuthentication();
@@ -314,5 +278,90 @@ public static class SecurityServiceExtensions
     {
         return httpContext.Connection.RemoteIpAddress;
     }
-}
 
+    /// <summary>
+    /// DI-aware post-configure options for <see cref="JwtBearerOptions"/>.
+    /// Eliminates intermediate BuildServiceProvider by resolving IJwtKeyRing directly from DI.
+    /// </summary>
+    private sealed class JwtBearerPostConfigureOptions : IPostConfigureOptions<JwtBearerOptions>
+    {
+        private readonly IJwtKeyRing _keyRing;
+        private readonly IOptions<JwtOptions> _jwtOptions;
+        private readonly IHostEnvironment _environment;
+
+        public JwtBearerPostConfigureOptions(
+            IJwtKeyRing keyRing,
+            IOptions<JwtOptions> jwtOptions,
+            IHostEnvironment environment)
+        {
+            _keyRing = keyRing;
+            _jwtOptions = jwtOptions;
+            _environment = environment;
+        }
+
+        public void PostConfigure(string? name, JwtBearerOptions options)
+        {
+            var jwt = _jwtOptions.Value;
+
+            options.RequireHttpsMetadata = _environment.IsProduction();
+            options.SaveToken = false;
+
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidIssuer = jwt.Issuer,
+                ValidateAudience = true,
+                ValidAudience = jwt.Audience,
+                ValidateLifetime = true,
+                RequireExpirationTime = true,
+                ValidateIssuerSigningKey = true,
+                RequireSignedTokens = true,
+                ClockSkew = TimeSpan.Zero,
+                ValidAlgorithms = [SecurityAlgorithms.HmacSha256],
+                IssuerSigningKeyResolver = (token, securityToken, kid, validationParameters) =>
+                {
+                    if (string.IsNullOrWhiteSpace(kid))
+                    {
+                        throw new SecurityTokenException("Missing required 'kid' header in JWT.");
+                    }
+
+                    if (_keyRing.TryGetKey(kid, out var key) && key != null)
+                    {
+                        return [key];
+                    }
+
+                    throw new SecurityTokenException($"Unknown or untrusted 'kid': '{kid}'.");
+                }
+            };
+
+            options.Events = new JwtBearerEvents
+            {
+                OnChallenge = async context =>
+                {
+                    context.HandleResponse();
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    context.Response.ContentType = "application/problem+json";
+
+                    var problemDetails = new ProblemDetails
+                    {
+                        Status = StatusCodes.Status401Unauthorized,
+                        Title = "Unauthorized",
+                        Detail = "Access to this resource requires valid JWT Bearer authentication.",
+                        Instance = context.Request.Path,
+                        Extensions =
+                        {
+                            ["traceId"] = context.HttpContext.TraceIdentifier,
+                            ["timestamp"] = DateTimeOffset.UtcNow
+                        }
+                    };
+
+                    await context.Response.WriteAsJsonAsync(
+                        problemDetails,
+                        options: (System.Text.Json.JsonSerializerOptions?)null,
+                        contentType: "application/problem+json",
+                        cancellationToken: context.HttpContext.RequestAborted);
+                }
+            };
+        }
+    }
+}

@@ -32,5 +32,11 @@ public sealed class RateLimitingOptions
     /// Number of segments per sliding window for memory-bounded cleanup. Defaults to 6 (10-second segments).
     /// </summary>
     public int SegmentsPerWindow { get; set; } = 6;
+
+    /// <summary>
+    /// Maximum number of distinct client IP partitions tracked concurrently in memory per policy.
+    /// Hard-bounds memory usage to protect against high-cardinality IP flood attacks. Defaults to 10,000.
+    /// </summary>
+    public int MaxTrackedPartitions { get; set; } = 10_000;
 }
 

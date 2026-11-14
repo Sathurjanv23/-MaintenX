@@ -47,6 +47,12 @@ public sealed class JwtOptions
     public Dictionary<string, string> VerificationKeys { get; set; } = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Optional explicit UTC retirement timestamps for keys in VerificationKeys.
+    /// If omitted for a retired key, its retirement timestamp defaults to application initialization time.
+    /// </summary>
+    public Dictionary<string, DateTimeOffset> RetiredAtTimestamps { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Override ToString to guarantee signing keys and secret material are never printed in logs or diagnostic dumps.
     /// </summary>
     public override string ToString() =>

@@ -217,17 +217,20 @@ Authentication uses signed JSON Web Tokens (JWT) conforming to OAuth 2.0 Securit
   - `Jwt:AccessTokenLifetimeMinutes`: Access token lifetime in minutes (strictly 15 minutes by default).
   - `Jwt:RetiredKeyRetentionHours`: Minimum retention window in hours for retired keys in the verification ring (strictly 24 hours).
   - `Jwt:VerificationKeys`: Dictionary mapping historical Key IDs to Base64 keys for zero-downtime key rotation.
+  - `Jwt:RetiredAtTimestamps`: Dictionary mapping historical Key IDs to ISO-8601 UTC retirement timestamps for dynamic retention evaluation.
 - **Local Development Setup**:
   Safe non-production defaults are provided in `services/api/appsettings.Development.json` with Key ID `dev-key-2026-v1` and a dedicated 32-byte (256-bit) Base64 signing key (`REVWX09OTFlfSU5TRUNVUkVfS0VZXzMyX0JZVEVTISE=`, representing `DEV_ONLY_INSECURE_KEY_32_BYTES!!`). This key is explicitly marked as a local development placeholder and must never be used in production.
 - **Production Secret Management**:
   Base `appsettings.json` intentionally leaves key material empty. In production, keys must be provisioned via environment variables (`Jwt__SigningKey`, `Jwt__KeyId`) or a cloud secrets manager (e.g. AWS Secrets Manager, Azure Key Vault). Startup validation (`JwtOptionsValidator`) fails fast if keys are missing, invalid Base64, or under 256 bits.
-- **Signing-Key Rotation Procedure (24-Hour Retention Window)**:
+- **Signing-Key Rotation Procedure & Enforceable 24-Hour Retention**:
   1. Generate new 256-bit key: `openssl rand -base64 32` and assign a new Key ID (`kid`, e.g. `key-2026-v2`).
-  2. In your secrets store, move the retiring key to `Jwt:VerificationKeys:key-2026-v1`.
+  2. In your secrets store, move the retiring key to `Jwt:VerificationKeys:key-2026-v1` and record its retirement timestamp in `Jwt:RetiredAtTimestamps:key-2026-v1`.
   3. Set `Jwt:KeyId` to `key-2026-v2` and `Jwt:SigningKey` to the new key.
   4. Deploy the configuration across nodes. New tokens are signed with `key-2026-v2`. Existing tokens signed with `key-2026-v1` continue to verify seamlessly via `Jwt:VerificationKeys`.
-  5. **Retention Window**: Retain `key-2026-v1` in `Jwt:VerificationKeys` for the full 24-hour retention period (`Jwt:RetiredKeyRetentionHours`). Never purge an old verification key early while valid tokens or client sessions may still require signature verification.
-  6. After the 24-hour retention window has elapsed, remove `key-2026-v1` from `Jwt:VerificationKeys`.
+  5. **Enforceable Retention**: `JwtKeyRing` evaluates elapsed retention time dynamically via `TimeProvider`. A retired key cannot be purged before 24 hours have elapsed. Once the 24-hour window elapses, the key expires and signature validation rejects it.
+  6. Operational responsibility: After 24 hours have elapsed, operators may clean up the retired key entry from `Jwt:VerificationKeys`.
+- **DI-Aware Single Container Configuration**:
+  JWT Bearer authentication is configured using `IPostConfigureOptions<JwtBearerOptions>`, resolving `IJwtKeyRing` directly from the single application DI container with zero intermediate `BuildServiceProvider()` calls.
 
 #### Trusted Reverse Proxy & Forwarded Headers
 - **Configuration**:
@@ -236,16 +239,21 @@ Authentication uses signed JSON Web Tokens (JWT) conforming to OAuth 2.0 Securit
   - `TrustedProxies:ForwardLimit`: Maximum number of proxy hops to evaluate (default `1`).
 - **Production Fail-Fast Security**:
   In `Production` mode, `TrustedProxyOptionsValidator` crashes startup if both `KnownProxies` and `KnownNetworks` are empty, preventing client IP spoofing via untrusted `X-Forwarded-For` headers. In development/testing, loopback (`127.0.0.1`, `::1`) is trusted by default.
+- **Authoritative Pipeline Order**:
+  `app.UseForwardedHeaders()` is invoked at the very beginning of the pipeline (before CORS and exception handling), guaranteeing `RemoteIpAddress` is resolved accurately for all downstream middleware. `app.UseMaintenXSecurity()` then authoritatively runs `UseRateLimiter` &rarr; `UseAuthentication` &rarr; `UseAuthorization`.
 
-#### Endpoint Rate Limiting
+#### Endpoint Rate Limiting (Memory-Bounded)
 - **Per-Instance Limits**:
   - `Auth.Registration`: 5 requests / minute / IP
   - `Auth.Login`: 10 requests / minute / IP
   - `Auth.Refresh`: 30 requests / minute / IP
-- **Behavior**:
+  - `RateLimiting:MaxTrackedPartitions`: Maximum concurrent IP partitions tracked in memory (default 10,000).
+- **Behavior & Memory Bound**:
   - Exceeding limits returns HTTP `429 Too Many Requests` with a standard RFC 7807 Problem Details payload and a `Retry-After` header.
   - Unidentified/missing client IPs are isolated into a restricted single-permit partition, preventing bypass.
-  - *Limitation*: Rate limiting is partition-bound per API container. When scaling horizontally across multiple nodes, a distributed backplane (e.g. Redis) should be introduced.
+  - High-cardinality IP traffic is managed by `BoundedPartitionTracker`. Active throttled IPs are never evicted by incoming traffic (preventing brute-force quota reset bypass). Under extreme flood saturation where concurrent active IPs exceed `MaxTrackedPartitions`, excess un-tracked traffic is routed to a constrained overflow partition.
+  - Expired partitions are automatically pruned after their sliding window elapses.
+  - *Limitation*: Rate limiting is partition-bound per API container. When scaling horizontally across multiple nodes, a distributed backplane (e.g. Redis) will be introduced in subsequent multi-instance features.
 
 ### 5. Run ASP.NET Core Web API
 ```bash

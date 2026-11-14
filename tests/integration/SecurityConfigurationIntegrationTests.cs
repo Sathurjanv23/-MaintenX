@@ -458,6 +458,76 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
     }
 
+    [Fact]
+    public void KeyRing_ResolvedFromApplicationServices_IsSingleSingletonInstance()
+    {
+        var factory = CreateConfiguredFactory();
+        using var scope1 = factory.Services.CreateScope();
+        using var scope2 = factory.Services.CreateScope();
+
+        var keyRing1 = scope1.ServiceProvider.GetRequiredService<IJwtKeyRing>();
+        var keyRing2 = scope2.ServiceProvider.GetRequiredService<IJwtKeyRing>();
+        var rootKeyRing = factory.Services.GetRequiredService<IJwtKeyRing>();
+
+        Assert.Same(rootKeyRing, keyRing1);
+        Assert.Same(keyRing1, keyRing2);
+    }
+
+    [Fact]
+    public async Task RateLimiting_HighCardinalityIpTraffic_IsBoundedByMaxTrackedPartitions_AndOverflowIsThrottled()
+    {
+        var factory = _baseFactory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
+            builder.UseSetting("Jwt:Issuer", TestIssuer);
+            builder.UseSetting("Jwt:Audience", TestAudience);
+            builder.UseSetting("Jwt:KeyId", ActiveKeyId);
+            builder.UseSetting("Jwt:SigningKey", ActiveSigningKeyBase64);
+            builder.UseSetting("RateLimiting:MaxTrackedPartitions", "3");
+            builder.UseSetting("RateLimiting:WindowSeconds", "60");
+
+            builder.ConfigureServices(services =>
+            {
+                services.AddTransient<IStartupFilter, TestSocketSimulationStartupFilter>();
+                services.AddSingleton<IModule, TestSecurityModule>();
+            });
+        });
+
+        var client = factory.CreateClient();
+        var tracker = factory.Services.GetRequiredService<BoundedPartitionTracker>();
+
+        // 3 unique IPs fill the partition capacity
+        for (int i = 1; i <= 3; i++)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login");
+            req.Headers.Add("X-Test-Socket-Remote-Ip", $"198.51.100.{i}");
+            var resp = await client.SendAsync(req);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        }
+
+        Assert.Equal(3, tracker.ActiveTrackedCount);
+
+        // Send request from 4th unique IP: capacity is full, routed to overflow partition (1 permit limit)
+        using (var req4 = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login"))
+        {
+            req4.Headers.Add("X-Test-Socket-Remote-Ip", "198.51.100.99");
+            var resp4 = await client.SendAsync(req4);
+            Assert.Equal(HttpStatusCode.OK, resp4.StatusCode);
+        }
+
+        Assert.Equal(3, tracker.ActiveTrackedCount);
+
+        // 5th unique IP also hits overflow partition, which has exhausted its 1 permit -> throttled with 429
+        using (var req5 = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login"))
+        {
+            req5.Headers.Add("X-Test-Socket-Remote-Ip", "198.51.100.100");
+            var resp5 = await client.SendAsync(req5);
+            Assert.Equal(HttpStatusCode.TooManyRequests, resp5.StatusCode);
+        }
+
+        Assert.Equal(3, tracker.ActiveTrackedCount);
+    }
+
     private sealed class TestSocketSimulationStartupFilter : IStartupFilter
     {
         public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
