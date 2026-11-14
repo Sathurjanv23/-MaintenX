@@ -167,7 +167,7 @@ cp .env.example .env
 ```
 
 ### 2. Start PostgreSQL via Docker Compose
-Docker Compose initializes a cluster with a dedicated superuser (`postgres`) and creates a restricted application role (`maintenx_app` without superuser or createdb privileges) owning the `maintenx_dev` database:
+Docker Compose initializes a cluster with a dedicated superuser (`postgres`) and creates a restricted application role (`maintenx_app` without superuser or createdb privileges) owning the `maintenx_dev` database. The credentials are dynamically provisioned via `POSTGRES_APP_PASSWORD` and `POSTGRES_ADMIN_PASSWORD` defined in your `.env` file (executed securely via `infra/docker/init-db/01-init-roles.sh` with no committed default credentials):
 ```bash
 docker-compose up -d postgres
 ```
@@ -180,16 +180,16 @@ docker-compose ps
 No database credentials or passwords are committed in `appsettings.json`. For local development, set `DefaultConnection` via .NET User Secrets:
 ```bash
 cd services/api
-dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=<your_local_app_password>;"
 cd ../..
 ```
 Or via environment variables:
 ```bash
 # On Linux / macOS:
-export ConnectionStrings__DefaultConnection="Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+export ConnectionStrings__DefaultConnection="Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=<your_local_app_password>;"
 
 # On Windows (PowerShell):
-$env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+$env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=<your_local_app_password>;"
 ```
 
 ### 4. Run ASP.NET Core Web API
@@ -227,16 +227,20 @@ flutter run
 # Build complete solution
 dotnet build MaintenX.sln
 
+# Run dependency vulnerability audit
+dotnet list MaintenX.sln package --vulnerable --include-transitive
+
 # Run unit tests
 dotnet test tests/unit/MaintenX.UnitTests.csproj
 
 # Run integration tests against real PostgreSQL using separate administrator & application roles
 # Set environment variables for isolated test provisioning:
 # Windows (PowerShell):
-$env:ConnectionStrings__AdminConnection = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres_local_secret_2026;"
-$env:ConnectionStrings__TestConnection = "Host=localhost;Port=5432;Database=postgres;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
-$env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+$env:ConnectionStrings__AdminConnection = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=<admin_password>;"
+$env:ConnectionStrings__TestConnection = "Host=localhost;Port=5432;Database=postgres;Username=maintenx_app;Password=<app_password>;"
+$env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=<app_password>;"
 $env:TestDatabase__AllowProvisioning = "true"
+$env:TestDatabase__AllowedHosts = "localhost;127.0.0.1;postgres"
 
 dotnet test tests/integration/MaintenX.IntegrationTests.csproj
 ```
