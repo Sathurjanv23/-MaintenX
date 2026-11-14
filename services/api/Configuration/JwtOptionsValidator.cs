@@ -35,6 +35,11 @@ public sealed class JwtOptionsValidator : IValidateOptions<JwtOptions>
             failures.Add($"Invalid JWT access token lifetime: {options.AccessTokenLifetimeMinutes} minutes. Lifetime must be greater than zero.");
         }
 
+        if (options.RetiredKeyRetentionHours <= 0)
+        {
+            failures.Add($"Invalid JWT retired key retention hours: {options.RetiredKeyRetentionHours}. Must be greater than zero.");
+        }
+
         if (string.IsNullOrWhiteSpace(options.SigningKey))
         {
             failures.Add("Missing required JWT signing key: 'Jwt:SigningKey'. A Base64-encoded key of at least 256 bits (32 bytes) is required.");

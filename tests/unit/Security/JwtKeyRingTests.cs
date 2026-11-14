@@ -97,5 +97,43 @@ public class JwtKeyRingTests
         Assert.False(found);
         Assert.Null(key);
     }
+
+    [Fact]
+    public void KeyRing_RetiredKeyRetainedInVerificationRing_RemainsResolvableDuring24HourRetentionWindow()
+    {
+        var activeKid = "active-key-v2";
+        var retiredKid = "retired-key-v1-retained-24h";
+        var retiredSecret = GenerateBase64Key(32);
+
+        var options = Options.Create(new JwtOptions
+        {
+            KeyId = activeKid,
+            SigningKey = GenerateBase64Key(32),
+            RetiredKeyRetentionHours = 24,
+            VerificationKeys = new Dictionary<string, string>
+            {
+                [retiredKid] = retiredSecret
+            }
+        });
+
+        var ring = new JwtKeyRing(options);
+
+        // Verification key is preserved and resolvable during the 24-hour retention period
+        Assert.True(ring.TryGetKey(retiredKid, out var retiredKey));
+        Assert.NotNull(retiredKey);
+        Assert.Equal(retiredKid, retiredKey.KeyId);
+
+        // Once removed after the 24-hour retention period, it is no longer resolvable
+        var optionsAfter24h = Options.Create(new JwtOptions
+        {
+            KeyId = activeKid,
+            SigningKey = options.Value.SigningKey,
+            VerificationKeys = new Dictionary<string, string>()
+        });
+
+        var ringAfterPurge = new JwtKeyRing(optionsAfter24h);
+        Assert.False(ringAfterPurge.TryGetKey(retiredKid, out var purgedKey));
+        Assert.Null(purgedKey);
+    }
 }
 

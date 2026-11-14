@@ -209,5 +209,48 @@ public class JwtOptionsValidatorTests
         Assert.DoesNotContain(secret, stringRep);
         Assert.Contains("active-key-1", stringRep);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(-24)]
+    public void Validate_WithZeroOrNegativeRetiredKeyRetentionHours_Fails(int hours)
+    {
+        var options = new JwtOptions
+        {
+            Issuer = "https://api.maintenx.internal",
+            Audience = "https://maintenx.internal",
+            KeyId = "active-key-1",
+            SigningKey = GenerateBase64Key(32),
+            RetiredKeyRetentionHours = hours
+        };
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Failed);
+        Assert.Contains(result.Failures, f => f.Contains("retired key retention hours", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Validate_WithDevelopmentPlaceholderKey_SatisfiesAllValidationRules()
+    {
+        const string devPlaceholderKey = "REVWX09OTFlfSU5TRUNVUkVfS0VZXzMyX0JZVEVTISE=";
+        var decoded = Convert.FromBase64String(devPlaceholderKey);
+        Assert.Equal(32, decoded.Length);
+
+        var options = new JwtOptions
+        {
+            Issuer = "https://api.maintenx.internal",
+            Audience = "https://maintenx.internal",
+            KeyId = "dev-key-2026-v1",
+            SigningKey = devPlaceholderKey,
+            AccessTokenLifetimeMinutes = 15,
+            RetiredKeyRetentionHours = 24
+        };
+
+        var result = _validator.Validate(null, options);
+
+        Assert.True(result.Succeeded);
+    }
 }
 

@@ -33,6 +33,13 @@ public sealed class JwtOptions
     public int AccessTokenLifetimeMinutes { get; set; } = 15;
 
     /// <summary>
+    /// Retention period in hours for retired verification keys in the key ring.
+    /// In accordance with the security architecture, retired keys are retained in VerificationKeys
+    /// for at least 24 hours after rotation to prevent sudden invalidation during rollout or clock discrepancies.
+    /// </summary>
+    public int RetiredKeyRetentionHours { get; set; } = 24;
+
+    /// <summary>
     /// Additional verification keys for zero-downtime key rotation.
     /// Key ID (kid) to Base64-encoded symmetric key material.
     /// Tokens signed by these keys remain valid for signature verification during the rotation window.
@@ -43,6 +50,6 @@ public sealed class JwtOptions
     /// Override ToString to guarantee signing keys and secret material are never printed in logs or diagnostic dumps.
     /// </summary>
     public override string ToString() =>
-        $"JwtOptions {{ Issuer: '{Issuer}', Audience: '{Audience}', KeyId: '{KeyId}', Lifetime: {AccessTokenLifetimeMinutes}m, VerificationKeyCount: {VerificationKeys.Count} }}";
+        $"JwtOptions {{ Issuer: '{Issuer}', Audience: '{Audience}', KeyId: '{KeyId}', Lifetime: {AccessTokenLifetimeMinutes}m, RetiredKeyRetention: {RetiredKeyRetentionHours}h, VerificationKeyCount: {VerificationKeys.Count} }}";
 }
 

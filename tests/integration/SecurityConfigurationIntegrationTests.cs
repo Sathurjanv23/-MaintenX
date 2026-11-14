@@ -51,17 +51,23 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
         string? keyId = null,
         Dictionary<string, string>? verificationKeys = null,
         List<string>? knownProxies = null,
-        string environment = "Development")
+        string environment = "Development",
+        bool overrideJwtSettings = true)
     {
         return _baseFactory.WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment(environment);
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
-            builder.UseSetting("Jwt:Issuer", TestIssuer);
-            builder.UseSetting("Jwt:Audience", TestAudience);
-            builder.UseSetting("Jwt:KeyId", keyId ?? ActiveKeyId);
-            builder.UseSetting("Jwt:SigningKey", activeKey ?? ActiveSigningKeyBase64);
-            builder.UseSetting("Jwt:AccessTokenLifetimeMinutes", "15");
+
+            if (overrideJwtSettings)
+            {
+                builder.UseSetting("Jwt:Issuer", TestIssuer);
+                builder.UseSetting("Jwt:Audience", TestAudience);
+                builder.UseSetting("Jwt:KeyId", keyId ?? ActiveKeyId);
+                builder.UseSetting("Jwt:SigningKey", activeKey ?? ActiveSigningKeyBase64);
+                builder.UseSetting("Jwt:AccessTokenLifetimeMinutes", "15");
+                builder.UseSetting("Jwt:RetiredKeyRetentionHours", "24");
+            }
 
             if (verificationKeys != null)
             {
@@ -83,13 +89,18 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
             {
                 var settings = new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=test;Username=test;Password=test;",
-                    ["Jwt:Issuer"] = TestIssuer,
-                    ["Jwt:Audience"] = TestAudience,
-                    ["Jwt:KeyId"] = keyId ?? ActiveKeyId,
-                    ["Jwt:SigningKey"] = activeKey ?? ActiveSigningKeyBase64,
-                    ["Jwt:AccessTokenLifetimeMinutes"] = "15"
+                    ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=test;Username=test;Password=test;"
                 };
+
+                if (overrideJwtSettings)
+                {
+                    settings["Jwt:Issuer"] = TestIssuer;
+                    settings["Jwt:Audience"] = TestAudience;
+                    settings["Jwt:KeyId"] = keyId ?? ActiveKeyId;
+                    settings["Jwt:SigningKey"] = activeKey ?? ActiveSigningKeyBase64;
+                    settings["Jwt:AccessTokenLifetimeMinutes"] = "15";
+                    settings["Jwt:RetiredKeyRetentionHours"] = "24";
+                }
 
                 if (verificationKeys != null)
                 {
@@ -393,6 +404,58 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
         });
 
         Assert.Contains("Production security violation", ex.Message);
+    }
+
+    [Fact]
+    public void ProductionStartup_WhenJwtSigningKeyIsMissing_ThrowsValidationException()
+    {
+        var factory = CreateConfiguredFactory(activeKey: "", knownProxies: ["10.0.0.1"], environment: "Production");
+
+        var ex = Assert.Throws<OptionsValidationException>(() =>
+        {
+            _ = factory.CreateClient();
+        });
+
+        Assert.Contains("Jwt:SigningKey", ex.Message);
+    }
+
+    [Fact]
+    public void ProductionStartup_WhenJwtSigningKeyHasInsufficientEntropy_ThrowsValidationException()
+    {
+        var shortKey = GenerateBase64Key(16); // 128 bits
+        var factory = CreateConfiguredFactory(activeKey: shortKey, knownProxies: ["10.0.0.1"], environment: "Production");
+
+        var ex = Assert.Throws<OptionsValidationException>(() =>
+        {
+            _ = factory.CreateClient();
+        });
+
+        Assert.Contains("Insufficient key entropy", ex.Message);
+    }
+
+    [Fact]
+    public async Task DevelopmentStartup_WithDevelopmentSettings_SucceedsWithoutCustomKeyOverrides()
+    {
+        var factory = CreateConfiguredFactory(overrideJwtSettings: false, environment: "Development");
+        var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/health/live");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task JwtAuthentication_WhenRetiredKeyPurgedAfterRetentionWindow_RejectsWith401Unauthorized()
+    {
+        var factory = CreateConfiguredFactory(verificationKeys: []);
+        var client = factory.CreateClient();
+
+        var token = GenerateJwt(RetiredSigningKeyBase64, RetiredKeyId);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await client.GetAsync("/test-security/protected");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
     }
 
     private sealed class TestSocketSimulationStartupFilter : IStartupFilter

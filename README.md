@@ -215,17 +215,19 @@ Authentication uses signed JSON Web Tokens (JWT) conforming to OAuth 2.0 Securit
   - `Jwt:KeyId`: Active Key ID (`kid`) header identifying the active signing key (e.g. `prod-key-2026-v1`).
   - `Jwt:SigningKey`: Base64-encoded symmetric key containing at least 256 bits (32 decoded bytes).
   - `Jwt:AccessTokenLifetimeMinutes`: Access token lifetime in minutes (strictly 15 minutes by default).
+  - `Jwt:RetiredKeyRetentionHours`: Minimum retention window in hours for retired keys in the verification ring (strictly 24 hours).
   - `Jwt:VerificationKeys`: Dictionary mapping historical Key IDs to Base64 keys for zero-downtime key rotation.
 - **Local Development Setup**:
-  Safe non-production defaults are provided in `services/api/appsettings.Development.json` (`dev-key-2026-v1`), allowing immediate local development without secret setup.
+  Safe non-production defaults are provided in `services/api/appsettings.Development.json` with Key ID `dev-key-2026-v1` and a dedicated 32-byte (256-bit) Base64 signing key (`REVWX09OTFlfSU5TRUNVUkVfS0VZXzMyX0JZVEVTISE=`, representing `DEV_ONLY_INSECURE_KEY_32_BYTES!!`). This key is explicitly marked as a local development placeholder and must never be used in production.
 - **Production Secret Management**:
   Base `appsettings.json` intentionally leaves key material empty. In production, keys must be provisioned via environment variables (`Jwt__SigningKey`, `Jwt__KeyId`) or a cloud secrets manager (e.g. AWS Secrets Manager, Azure Key Vault). Startup validation (`JwtOptionsValidator`) fails fast if keys are missing, invalid Base64, or under 256 bits.
-- **Signing-Key Rotation Procedure**:
+- **Signing-Key Rotation Procedure (24-Hour Retention Window)**:
   1. Generate new 256-bit key: `openssl rand -base64 32` and assign a new Key ID (`kid`, e.g. `key-2026-v2`).
   2. In your secrets store, move the retiring key to `Jwt:VerificationKeys:key-2026-v1`.
   3. Set `Jwt:KeyId` to `key-2026-v2` and `Jwt:SigningKey` to the new key.
-  4. Deploy the configuration. New tokens are signed with `key-2026-v2`. Existing tokens signed with `key-2026-v1` remain valid until their 15-minute expiration expires.
-  5. After the 15-minute rotation window (typically 24 hours), remove `key-2026-v1` from `Jwt:VerificationKeys`.
+  4. Deploy the configuration across nodes. New tokens are signed with `key-2026-v2`. Existing tokens signed with `key-2026-v1` continue to verify seamlessly via `Jwt:VerificationKeys`.
+  5. **Retention Window**: Retain `key-2026-v1` in `Jwt:VerificationKeys` for the full 24-hour retention period (`Jwt:RetiredKeyRetentionHours`). Never purge an old verification key early while valid tokens or client sessions may still require signature verification.
+  6. After the 24-hour retention window has elapsed, remove `key-2026-v1` from `Jwt:VerificationKeys`.
 
 #### Trusted Reverse Proxy & Forwarded Headers
 - **Configuration**:
