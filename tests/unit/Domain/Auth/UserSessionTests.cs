@@ -190,6 +190,22 @@ public class UserSessionTests
     }
 
     [Fact]
+    public void AllowedReasons_CannotBeMutatedThroughCastOrPublicApi()
+    {
+        // 1. Backing type is genuinely an immutable FrozenSet<string>
+        Assert.IsAssignableFrom<System.Collections.Frozen.FrozenSet<string>>(SessionRevocationReason.AllowedReasons);
+
+        // 2. Casting to mutable HashSet throws InvalidCastException
+        Assert.Throws<InvalidCastException>(() =>
+            (HashSet<string>)(object)SessionRevocationReason.AllowedReasons);
+
+        // 3. Casting to ICollection<string> has IsReadOnly = true and Add() throws NotSupportedException
+        var collection = (ICollection<string>)SessionRevocationReason.AllowedReasons;
+        Assert.True(collection.IsReadOnly);
+        Assert.Throws<NotSupportedException>(() => collection.Add("UnapprovedReasonAddedViaCast"));
+    }
+
+    [Fact]
     public void DomainInvariants_UserSessionPropertiesMustNotHavePublicSetters()
     {
         var properties = typeof(UserSession).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);

@@ -1,32 +1,144 @@
 namespace MaintenX.Api.Domain.Auth;
 
+using System.Collections.Frozen;
 using System.Text.RegularExpressions;
 
 /// <summary>
-/// Strictly structured, immutable safe metadata value object for security audit events.
-/// Only explicitly approved fields ('Reason', 'DetectedLineage', 'ActionTaken') are supported.
-/// Rejects arbitrary unapproved properties, passwords, password hashes, raw tokens, token hashes, and submitted email addresses.
-/// Prevents unvalidated construction by encapsulating property setters and validating all public construction paths.
+/// Strictly structured, genuinely immutable safe metadata value object for security audit events.
+/// Only explicitly allow-listed reasons, actions, and constrained lineage identifiers are permitted.
+/// Arbitrary user-controlled text, credentials, phone numbers, and alternative tokens are strictly rejected.
 /// </summary>
 public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
 {
-    private static readonly Regex Sha256HexRegex = new(
-        @"^[a-fA-F0-9]{64}$",
+    private static readonly Regex LineageIdentifierRegex = new(
+        @"^(lineage|generation|gen|depth|ancestor|predecessor|node)_[a-zA-Z0-9]{1,32}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    public static class Reasons
+    {
+        public const string UserRegistration = "user_registration";
+        public const string StandardLogin = "standard_login";
+        public const string InvalidCredentials = "invalid_credentials";
+        public const string AccountLocked = "account_locked";
+        public const string AccountSuspended = "account_suspended";
+        public const string AccountReactivated = "account_reactivated";
+        public const string AccountDeactivated = "account_deactivated";
+        public const string TokenRefreshed = "token_refreshed";
+        public const string TokenReplay = "token_replay";
+        public const string TokenExpired = "token_expired";
+        public const string TokenRevoked = "token_revoked";
+        public const string UserLogout = "user_logout";
+        public const string PasswordChanged = "password_changed";
+        public const string SecurityStampRotated = "security_stamp_rotated";
+        public const string SessionRevoked = "session_revoked";
+        public const string SessionExpired = "session_expired";
+        public const string RateLimitExceeded = "rate_limit_exceeded";
+        public const string ConcurrencyConflict = "concurrency_conflict";
+        public const string AdminAction = "admin_action";
+    }
+
+    public static class Actions
+    {
+        public const string Permit = "permit";
+        public const string Deny = "deny";
+        public const string LockoutApplied = "lockout_applied";
+        public const string LockoutCleared = "lockout_cleared";
+        public const string SessionCreated = "session_created";
+        public const string SessionRevoked = "session_revoked";
+        public const string TokenRotated = "token_rotated";
+        public const string TokenRevoked = "token_revoked";
+        public const string AccountSuspended = "account_suspended";
+        public const string AccountReactivated = "account_reactivated";
+        public const string AccountDeactivated = "account_deactivated";
+        public const string SecurityStampRotated = "security_stamp_rotated";
+        public const string RateLimited = "rate_limited";
+        public const string AuditLogged = "audit_logged";
+    }
+
+    public static class Lineages
+    {
+        public const string RootSession = "root_session";
+        public const string PredecessorRotated = "predecessor_rotated";
+        public const string AncestorRotated = "ancestor_rotated";
+        public const string SuccessorIssued = "successor_issued";
+        public const string ReplayDetected = "replay_detected";
+        public const string DirectRotation = "direct_rotation";
+        public const string TerminalNode = "terminal_node";
+    }
+
     /// <summary>
-    /// Explicit audit reason (e.g., 'invalid_credentials', 'token_replay', 'user_logout', 'concurrency_stale_snapshot').
+    /// Genuinely immutable set of permitted audit reasons.
+    /// </summary>
+    public static readonly FrozenSet<string> ApprovedReasons = new[]
+    {
+        Reasons.UserRegistration,
+        Reasons.StandardLogin,
+        Reasons.InvalidCredentials,
+        Reasons.AccountLocked,
+        Reasons.AccountSuspended,
+        Reasons.AccountReactivated,
+        Reasons.AccountDeactivated,
+        Reasons.TokenRefreshed,
+        Reasons.TokenReplay,
+        Reasons.TokenExpired,
+        Reasons.TokenRevoked,
+        Reasons.UserLogout,
+        Reasons.PasswordChanged,
+        Reasons.SecurityStampRotated,
+        Reasons.SessionRevoked,
+        Reasons.SessionExpired,
+        Reasons.RateLimitExceeded,
+        Reasons.ConcurrencyConflict,
+        Reasons.AdminAction
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Genuinely immutable set of permitted audit actions.
+    /// </summary>
+    public static readonly FrozenSet<string> ApprovedActions = new[]
+    {
+        Actions.Permit,
+        Actions.Deny,
+        Actions.LockoutApplied,
+        Actions.LockoutCleared,
+        Actions.SessionCreated,
+        Actions.SessionRevoked,
+        Actions.TokenRotated,
+        Actions.TokenRevoked,
+        Actions.AccountSuspended,
+        Actions.AccountReactivated,
+        Actions.AccountDeactivated,
+        Actions.SecurityStampRotated,
+        Actions.RateLimited,
+        Actions.AuditLogged
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Genuinely immutable set of approved lineage constant identifiers.
+    /// </summary>
+    public static readonly FrozenSet<string> ApprovedLineages = new[]
+    {
+        Lineages.RootSession,
+        Lineages.PredecessorRotated,
+        Lineages.AncestorRotated,
+        Lineages.SuccessorIssued,
+        Lineages.ReplayDetected,
+        Lineages.DirectRotation,
+        Lineages.TerminalNode
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Explicit audit reason.
     /// </summary>
     public string? Reason { get; private set; }
 
     /// <summary>
-    /// Audit lineage identifier or depth tracing token replacement hierarchy (e.g., 'predecessor_rotated', 'root_session').
-    /// Raw token hashes are strictly prohibited.
+    /// Audit lineage identifier or depth tracing token replacement hierarchy.
     /// </summary>
     public string? DetectedLineage { get; private set; }
 
     /// <summary>
-    /// Action taken in response to the security event (e.g., 'lockout_applied', 'session_revoked', 'login_permitted').
+    /// Action taken in response to the security event.
     /// </summary>
     public string? ActionTaken { get; private set; }
 
@@ -39,24 +151,20 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
     }
 
     /// <summary>
-    /// Public constructor validating all supplied metadata fields against platform security invariants.
+    /// Public constructor validating all supplied metadata fields against platform allow-lists.
     /// </summary>
-    /// <param name="reason">Safe reason identifier.</param>
-    /// <param name="detectedLineage">Safe lineage identifier.</param>
-    /// <param name="actionTaken">Safe action-taken identifier.</param>
-    /// <exception cref="ArgumentException">Thrown if any supplied field violates safety rules or contains sensitive data.</exception>
+    /// <param name="reason">Safe reason identifier from <see cref="ApprovedReasons"/>.</param>
+    /// <param name="detectedLineage">Safe lineage identifier from <see cref="ApprovedLineages"/> or matching pattern.</param>
+    /// <param name="actionTaken">Safe action-taken identifier from <see cref="ApprovedActions"/>.</param>
+    /// <exception cref="ArgumentException">Thrown if any supplied field violates allow-lists or contains sensitive data.</exception>
     public SecurityAuditMetadata(
         string? reason = null,
         string? detectedLineage = null,
         string? actionTaken = null)
     {
-        ValidateMetadataField(nameof(reason), reason);
-        ValidateMetadataField(nameof(detectedLineage), detectedLineage);
-        ValidateMetadataField(nameof(actionTaken), actionTaken);
-
-        Reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
-        DetectedLineage = string.IsNullOrWhiteSpace(detectedLineage) ? null : detectedLineage.Trim();
-        ActionTaken = string.IsNullOrWhiteSpace(actionTaken) ? null : actionTaken.Trim();
+        Reason = ValidateAndNormalizeReason(reason);
+        DetectedLineage = ValidateAndNormalizeLineage(detectedLineage);
+        ActionTaken = ValidateAndNormalizeAction(actionTaken);
     }
 
     /// <summary>
@@ -75,54 +183,58 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         return new SecurityAuditMetadata(reason, detectedLineage, actionTaken);
     }
 
-    private static void ValidateMetadataField(string fieldName, string? value)
+    public static string? ValidateAndNormalizeReason(string? reason)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(reason))
         {
-            return;
+            return null;
         }
 
-        var trimmed = value.Trim();
-
-        if (trimmed.Length > 200)
-        {
-            throw new ArgumentException(
-                $"Metadata field '{fieldName}' cannot exceed 200 characters in length. Supplied length was {trimmed.Length}.",
-                fieldName);
-        }
-
-        // Prohibit email addresses
-        if (trimmed.Contains('@'))
+        var trimmed = reason.Trim();
+        if (!ApprovedReasons.Contains(trimmed))
         {
             throw new ArgumentException(
-                $"Metadata field '{fieldName}' cannot contain email addresses. Personally identifiable information must not be stored in audit metadata.",
-                fieldName);
+                $"Audit reason '{reason}' is not recognized. Reason must be an approved identifier: {string.Join(", ", ApprovedReasons)}.",
+                nameof(reason));
         }
 
-        // Prohibit password hashes (e.g. Argon2, PBKDF2, bcrypt, or UNIX crypt prefixes)
-        if (trimmed.StartsWith('$') || trimmed.Contains("$argon2") || trimmed.Contains("$pbkdf2") || trimmed.Contains("$2"))
+        return trimmed;
+    }
+
+    public static string? ValidateAndNormalizeAction(string? actionTaken)
+    {
+        if (string.IsNullOrWhiteSpace(actionTaken))
         {
-            throw new ArgumentException(
-                $"Metadata field '{fieldName}' cannot contain password hashes or credential fragments.",
-                fieldName);
+            return null;
         }
 
-        // Prohibit raw 64-character hexadecimal token hashes
-        if (trimmed.Length == 64 && Sha256HexRegex.IsMatch(trimmed))
+        var trimmed = actionTaken.Trim();
+        if (!ApprovedActions.Contains(trimmed))
         {
             throw new ArgumentException(
-                $"Metadata field '{fieldName}' cannot contain raw 64-character token hashes.",
-                fieldName);
+                $"Audit action '{actionTaken}' is not recognized. ActionTaken must be an approved identifier: {string.Join(", ", ApprovedActions)}.",
+                nameof(actionTaken));
         }
 
-        // Prohibit sensitive keywords
-        var lower = trimmed.ToLowerInvariant();
-        if (lower.Contains("password") || lower.Contains("bearer ") || lower.Contains("secret") || lower.Contains("securitystamp"))
+        return trimmed;
+    }
+
+    public static string? ValidateAndNormalizeLineage(string? lineage)
+    {
+        if (string.IsNullOrWhiteSpace(lineage))
         {
-            throw new ArgumentException(
-                $"Metadata field '{fieldName}' contains prohibited sensitive credential keyword.",
-                fieldName);
+            return null;
         }
+
+        var trimmed = lineage.Trim();
+        if (ApprovedLineages.Contains(trimmed) || LineageIdentifierRegex.IsMatch(trimmed))
+        {
+            return trimmed;
+        }
+
+        throw new ArgumentException(
+            $"Audit lineage identifier '{lineage}' is invalid. Must be an approved lineage constant or conform to format '^(lineage|generation|gen|depth|ancestor|predecessor|node)_[a-zA-Z0-9]{{1,32}}$'.",
+            nameof(lineage));
     }
 
     public bool Equals(SecurityAuditMetadata? other)

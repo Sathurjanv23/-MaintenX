@@ -1,5 +1,7 @@
 namespace MaintenX.Api.Domain.Auth;
 
+using System.Collections.Frozen;
+
 /// <summary>
 /// Strongly typed enum corresponding to approved session revocation reasons.
 /// </summary>
@@ -17,7 +19,7 @@ public enum SessionRevocationReasonType
 
 /// <summary>
 /// Standardized reasons for user session revocation across the platform.
-/// Enforces a closed, controlled set of permitted revocation reasons.
+/// Enforces a closed, genuinely immutable set of permitted revocation reasons.
 /// </summary>
 public static class SessionRevocationReason
 {
@@ -30,7 +32,11 @@ public static class SessionRevocationReason
     public const string AdminRevoked = "AdminRevoked";
     public const string Expired = "Expired";
 
-    public static readonly IReadOnlySet<string> AllowedReasons = new HashSet<string>(StringComparer.Ordinal)
+    /// <summary>
+    /// Genuinely immutable set of permitted revocation reasons.
+    /// Exposes a FrozenSet to guarantee immunity against casting mutations.
+    /// </summary>
+    public static readonly FrozenSet<string> AllowedReasons = new[]
     {
         UserLogout,
         PasswordChanged,
@@ -40,10 +46,11 @@ public static class SessionRevocationReason
         TokenReplayDetected,
         AdminRevoked,
         Expired
-    };
+    }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
     /// Checks whether the supplied reason string belongs to the controlled set of approved revocation reasons.
+    /// Case-sensitive check against the immutable set.
     /// </summary>
     public static bool IsValid(string? reason)
     {
