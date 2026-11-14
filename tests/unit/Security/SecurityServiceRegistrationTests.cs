@@ -1,6 +1,7 @@
 namespace MaintenX.UnitTests.Security;
 
 using System.Security.Cryptography;
+using MaintenX.Api.Application.Auth.Services;
 using MaintenX.Api.Common.Security;
 using MaintenX.Api.Configuration;
 using MaintenX.Api.Domain.Auth;
@@ -134,6 +135,17 @@ public class SecurityServiceRegistrationTests
     }
 
     [Fact]
+    public void AddMaintenXSecurity_RegistersAuthenticationService_AsScoped()
+    {
+        var services = CreateConfiguredServices();
+        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IAuthenticationService));
+
+        Assert.NotNull(descriptor);
+        Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+        Assert.Equal(typeof(AuthenticationService), descriptor.ImplementationType);
+    }
+
+    [Fact]
     public void AddMaintenXSecurity_RegistersMemoryCache()
     {
         var services = CreateConfiguredServices();
@@ -169,9 +181,11 @@ public class SecurityServiceRegistrationTests
         using var scope = provider.CreateScope();
         var stampStore = scope.ServiceProvider.GetRequiredService<IUserSecurityStampStore>();
         var stampValidator = scope.ServiceProvider.GetRequiredService<ISecurityStampValidator>();
+        var authService = scope.ServiceProvider.GetRequiredService<IAuthenticationService>();
 
         Assert.NotNull(stampStore);
         Assert.NotNull(stampValidator);
+        Assert.NotNull(authService);
     }
 
     private sealed class FakeHostEnvironment : IHostEnvironment

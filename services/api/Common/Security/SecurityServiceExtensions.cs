@@ -2,6 +2,7 @@ namespace MaintenX.Api.Common.Security;
 
 using System.Net;
 using System.Threading.RateLimiting;
+using MaintenX.Api.Application.Auth.Services;
 using MaintenX.Api.Configuration;
 using MaintenX.Api.Domain.Auth;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -254,6 +255,9 @@ public static class SecurityServiceExtensions
         services.AddSingleton<IRefreshTokenService, RefreshTokenService>();
         services.AddScoped<IUserSecurityStampStore, EfUserSecurityStampStore>();
         services.AddScoped<ISecurityStampValidator, SecurityStampValidator>();
+
+        // 7. Authentication Application Services (FEAT-002 T5)
+        services.AddScoped<IAuthenticationService, AuthenticationService>();
 
         return services;
     }
