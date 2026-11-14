@@ -68,6 +68,17 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore MaintenX.sln
 
+      - name: Audit Dependency Vulnerabilities
+        run: |
+          echo "Running dependency vulnerability audit across MaintenX solution..."
+          audit_output=$(dotnet list MaintenX.sln package --vulnerable --include-transitive)
+          echo "$audit_output"
+          if echo "$audit_output" | grep -Ei "(has the following vulnerable packages|has vulnerable packages|\[critical\]|\[high\]|\[moderate\]|\[low\])"; then
+            echo "::error::Vulnerable NuGet packages detected in MaintenX solution!"
+            exit 1
+          fi
+          echo "Vulnerability audit passed: no known vulnerable packages detected."
+
       - name: Build Solution (.NET 10 LTS)
         run: dotnet build MaintenX.sln --no-restore -c Release
 

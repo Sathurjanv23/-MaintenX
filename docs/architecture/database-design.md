@@ -168,10 +168,10 @@ To ensure zero risk of data loss or schema pollution on developer (`maintenx_dev
 2. **Strict Guard Rails & Host Allowlisting**:
    - Safety guard `TestDatabaseGuard` enforces explicit opt-in: `TestDatabase:AllowProvisioning=true`. If not set, tests fail closed.
    - Requires explicit `ConnectionStrings:AdminConnection` and `ConnectionStrings:TestConnection`. Refuses to fall back to `DefaultConnection`.
-   - Host allowlist verification: both connections must point to approved test hosts (`localhost`, `127.0.0.1`, `postgres`, `maintenx-postgres`, `host.docker.internal`). Unapproved or production hosts are rejected immediately.
+   - Host allowlist verification: `TestDatabase:AllowedHosts` is mandatory and fails closed if missing or empty. Both admin and test connections must point to explicitly allowlisted test hosts. Unapproved, remote, or production hosts are rejected immediately.
    - Name verification: database names must start strictly with `maintenx_test_`.
-   - Protected databases: explicitly forbids mutation or destruction of protected databases (`maintenx_dev`, `maintenx_prod`, `maintenx_staging`, `postgres`, `template1`), throwing an `InvalidOperationException` if violated.
-   - Factory disposal resilience: `_isolatedFactory` is disposed in `try/finally` even if database teardown encounters an error, and teardown errors are logged to `stderr` and rethrown.
+   - Protected databases: explicitly forbids mutation or destruction of protected databases (`maintenx_dev`, `maintenx_prod`, `maintenx_staging`, `postgres`, `template0`, `template1`), throwing an `InvalidOperationException` if violated.
+   - Factory disposal and teardown resilience: `_isolatedFactory` is disposed in `try/finally` even if database teardown encounters an error, teardown errors are logged to `stderr` and rethrown, and integration test `DB020` proves that any initialization failure after DB creation triggers immediate emergency DROP DATABASE and surfaces the error to the test runner.
 3. **Additive Migration Strategy**:
    - Schema modifications are delivered via additive migrations (`20261113000000_InitialDatabaseFoundation`, followed by `20261113000001_HardenTenantSlugConstraints`).
    - Prevents destructive schema rewrites or loss of existing migration history on existing developer environments.

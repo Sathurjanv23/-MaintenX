@@ -6,7 +6,10 @@ services:
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-postgres_local_secret_2026}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-maintenx_app}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      POSTGRES_APP_DB: ${POSTGRES_APP_DB:-maintenx_dev}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:

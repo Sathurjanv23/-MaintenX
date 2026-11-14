@@ -22,7 +22,7 @@ using Xunit;
 public static class TestDatabaseGuard
 {
     private static readonly string[] ProtectedDatabases =
-        ["maintenx_dev", "maintenx_prod", "maintenx_staging", "postgres", "template1"];
+        ["maintenx_dev", "maintenx_prod", "maintenx_staging", "postgres", "template0", "template1"];
 
     public static (string AdminConnection, string TestConnection) ValidateConnectionConfiguration(IConfiguration config)
     {
@@ -65,13 +65,25 @@ public static class TestDatabaseGuard
         // 2. Database Name Verification
         EnsureSafeTestDatabaseName(databaseName);
 
-        // 3. Approved Hosts Verification
-        var allowedHostsConfig = config.GetValue<string>("TestDatabase:AllowedHosts")
-            ?? "localhost;127.0.0.1;postgres;maintenx-postgres;host.docker.internal";
+        // 3. Approved Hosts Verification (fail closed: no default fallback)
+        var allowedHostsConfig = config.GetValue<string>("TestDatabase:AllowedHosts");
+        if (string.IsNullOrWhiteSpace(allowedHostsConfig))
+        {
+            throw new InvalidOperationException(
+                "Safety violation: 'TestDatabase:AllowedHosts' is missing or empty. " +
+                "Integration testing requires an explicit allowlist of approved database hosts (e.g. 'localhost;127.0.0.1;postgres').");
+        }
 
         var allowedHosts = allowedHostsConfig
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (allowedHosts.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Safety violation: 'TestDatabase:AllowedHosts' contains no valid hosts. " +
+                "Integration testing requires an explicit allowlist of approved database hosts.");
+        }
 
         var adminBuilder = new NpgsqlConnectionStringBuilder(adminConnectionString);
         var testBuilder = new NpgsqlConnectionStringBuilder(testConnectionString);
@@ -104,6 +116,94 @@ public static class TestDatabaseGuard
             throw new InvalidOperationException($"Safety violation: Cannot drop or mutate protected database '{databaseName}'.");
         }
     }
+
+    public static async Task<(string DatabaseName, string IsolatedConnectionString)> ProvisionAndInitializeAsync(
+        string adminConnectionString,
+        string testConnectionString,
+        IConfiguration config,
+        Func<string, Task>? initializeSchemaAsync = null,
+        string? customDbName = null)
+    {
+        var dbName = customDbName ?? $"maintenx_test_{Guid.NewGuid():N}";
+        ValidateTestDatabaseSafety(dbName, adminConnectionString, testConnectionString, config);
+
+        var testBuilder = new NpgsqlConnectionStringBuilder(testConnectionString);
+        var appRole = testBuilder.Username ?? string.Empty;
+
+        bool databaseCreated = false;
+        try
+        {
+            using (var adminConnection = new NpgsqlConnection(adminConnectionString))
+            {
+                await adminConnection.OpenAsync();
+                using var createCmd = adminConnection.CreateCommand();
+                createCmd.CommandText = !string.IsNullOrWhiteSpace(appRole)
+                    ? $"CREATE DATABASE {dbName} OWNER \"{appRole}\";"
+                    : $"CREATE DATABASE {dbName};";
+                await createCmd.ExecuteNonQueryAsync();
+
+                if (!string.IsNullOrWhiteSpace(appRole))
+                {
+                    using var grantCmd = adminConnection.CreateCommand();
+                    grantCmd.CommandText = $"GRANT ALL PRIVILEGES ON DATABASE {dbName} TO \"{appRole}\";";
+                    await grantCmd.ExecuteNonQueryAsync();
+                }
+
+                databaseCreated = true;
+            }
+
+            testBuilder.Database = dbName;
+            var isolatedConnectionString = testBuilder.ConnectionString;
+
+            if (initializeSchemaAsync != null)
+            {
+                await initializeSchemaAsync(isolatedConnectionString);
+            }
+
+            return (dbName, isolatedConnectionString);
+        }
+        catch (Exception ex)
+        {
+            if (databaseCreated)
+            {
+                try
+                {
+                    await DropDatabaseSafelyAsync(dbName, adminConnectionString);
+                }
+                catch (Exception cleanupEx)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to initialize isolated test database '{dbName}'. Immediate cleanup also failed: {cleanupEx.Message}",
+                        new AggregateException(ex, cleanupEx));
+                }
+            }
+
+            throw new InvalidOperationException(
+                $"Database integration testing requires an accessible PostgreSQL instance. " +
+                $"Failed to connect or initialize isolated test database '{dbName}'. Error: {ex.Message}", ex);
+        }
+    }
+
+    public static async Task DropDatabaseSafelyAsync(string databaseName, string adminConnectionString)
+    {
+        NpgsqlConnection.ClearAllPools();
+        EnsureSafeTestDatabaseName(databaseName);
+
+        using var adminConn = new NpgsqlConnection(adminConnectionString);
+        await adminConn.OpenAsync();
+
+        using var termCmd = adminConn.CreateCommand();
+        termCmd.CommandText = @"
+            SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE datname = @dbName AND pid <> pg_backend_pid();";
+        termCmd.Parameters.AddWithValue("dbName", databaseName);
+        await termCmd.ExecuteNonQueryAsync();
+
+        using var dropCmd = adminConn.CreateCommand();
+        dropCmd.CommandText = $"DROP DATABASE IF EXISTS {databaseName} WITH (FORCE);";
+        await dropCmd.ExecuteNonQueryAsync();
+    }
 }
 
 /// <summary>
@@ -135,94 +235,40 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         _adminConnectionString = adminConn;
         _testConnectionString = testConn;
 
-        _testDbName = $"maintenx_test_{Guid.NewGuid():N}";
-        TestDatabaseGuard.ValidateTestDatabaseSafety(_testDbName, _adminConnectionString, _testConnectionString, config);
-
         var testBuilder = new NpgsqlConnectionStringBuilder(_testConnectionString);
         _appRole = testBuilder.Username ?? string.Empty;
 
-        bool databaseCreated = false;
-        try
-        {
-            // Provision the clean isolated database using admin credentials and assign ownership to the restricted application role
-            using (var adminConnection = new NpgsqlConnection(_adminConnectionString))
+        var (dbName, isolatedConn) = await TestDatabaseGuard.ProvisionAndInitializeAsync(
+            _adminConnectionString,
+            _testConnectionString,
+            config,
+            initializeSchemaAsync: async (isolatedConnectionString) =>
             {
-                await adminConnection.OpenAsync();
-                using var createCmd = adminConnection.CreateCommand();
-                createCmd.CommandText = !string.IsNullOrWhiteSpace(_appRole)
-                    ? $"CREATE DATABASE {_testDbName} OWNER \"{_appRole}\";"
-                    : $"CREATE DATABASE {_testDbName};";
-                await createCmd.ExecuteNonQueryAsync();
-
-                if (!string.IsNullOrWhiteSpace(_appRole))
+                // Reconfigure WebApplicationFactory to target the isolated test database
+                _isolatedFactory = _baseFactory.WithWebHostBuilder(webBuilder =>
                 {
-                    using var grantCmd = adminConnection.CreateCommand();
-                    grantCmd.CommandText = $"GRANT ALL PRIVILEGES ON DATABASE {_testDbName} TO \"{_appRole}\";";
-                    await grantCmd.ExecuteNonQueryAsync();
-                }
+                    webBuilder.UseSetting("ConnectionStrings:DefaultConnection", isolatedConnectionString);
+                });
 
-                databaseCreated = true;
-            }
-
-            // Target the newly provisioned database using application test credentials
-            testBuilder.Database = _testDbName;
-            _isolatedConnectionString = testBuilder.ConnectionString;
-
-            // Reconfigure WebApplicationFactory to target the isolated test database
-            _isolatedFactory = _baseFactory.WithWebHostBuilder(webBuilder =>
-            {
-                webBuilder.UseSetting("ConnectionStrings:DefaultConnection", _isolatedConnectionString);
+                // Apply all committed migrations to the isolated test database using the application role
+                using var scope = _isolatedFactory.Services.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<MaintenXDbContext>();
+                await dbContext.Database.MigrateAsync();
             });
 
-            // Apply all committed migrations to the isolated test database using the application role
-            using var scope = _isolatedFactory.Services.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<MaintenXDbContext>();
-            await dbContext.Database.MigrateAsync();
-        }
-        catch (Exception ex)
-        {
-            if (databaseCreated)
-            {
-                try
-                {
-                    NpgsqlConnection.ClearAllPools();
-                    TestDatabaseGuard.EnsureSafeTestDatabaseName(_testDbName);
-                    using var cleanupConn = new NpgsqlConnection(_adminConnectionString);
-                    await cleanupConn.OpenAsync();
-                    using var dropCmd = cleanupConn.CreateCommand();
-                    dropCmd.CommandText = $"DROP DATABASE IF EXISTS {_testDbName} WITH (FORCE);";
-                    await dropCmd.ExecuteNonQueryAsync();
-                }
-                catch (Exception cleanupEx)
-                {
-                    throw new InvalidOperationException(
-                        $"Failed to initialize isolated test database '{_testDbName}'. Immediate cleanup also failed: {cleanupEx.Message}",
-                        new AggregateException(ex, cleanupEx));
-                }
-            }
-
-            throw new InvalidOperationException(
-                $"Database integration testing requires an accessible PostgreSQL instance. " +
-                $"Failed to connect or initialize isolated test database '{_testDbName}'. Error: {ex.Message}", ex);
-        }
+        _testDbName = dbName;
+        _isolatedConnectionString = isolatedConn;
     }
 
     public async Task DisposeAsync()
     {
-        NpgsqlConnection.ClearAllPools();
-
         Exception? teardownEx = null;
 
         if (!string.IsNullOrWhiteSpace(_testDbName) && !string.IsNullOrWhiteSpace(_adminConnectionString))
         {
             try
             {
-                TestDatabaseGuard.EnsureSafeTestDatabaseName(_testDbName);
-                using var adminConn = new NpgsqlConnection(_adminConnectionString);
-                await adminConn.OpenAsync();
-                using var dropCmd = adminConn.CreateCommand();
-                dropCmd.CommandText = $"DROP DATABASE IF EXISTS {_testDbName} WITH (FORCE);";
-                await dropCmd.ExecuteNonQueryAsync();
+                await TestDatabaseGuard.DropDatabaseSafelyAsync(_testDbName, _adminConnectionString);
             }
             catch (Exception ex)
             {
@@ -849,7 +895,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         var validAdmin = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=pass;";
         var validTest = "Host=localhost;Port=5432;Database=postgres;Username=maintenx_app;Password=pass;";
 
-        // 1. Disabled opt-in throws InvalidOperationException
+        // 1. Missing or disabled opt-in throws InvalidOperationException
         var configDisabledOptIn = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -861,7 +907,51 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         Assert.Throws<InvalidOperationException>(() =>
             TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, configDisabledOptIn));
 
-        // 2. Unapproved host throws InvalidOperationException
+        var configMissingOptIn = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TestDatabase:AllowedHosts"] = "localhost"
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, configMissingOptIn));
+
+        // 2. Missing, empty, or whitespace AllowedHosts throws InvalidOperationException (fail-closed)
+        var configMissingAllowedHosts = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TestDatabase:AllowProvisioning"] = "true"
+            })
+            .Build();
+
+        var missingEx = Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, configMissingAllowedHosts));
+        Assert.Contains("missing or empty", missingEx.Message, StringComparison.OrdinalIgnoreCase);
+
+        var configEmptyAllowedHosts = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TestDatabase:AllowProvisioning"] = "true",
+                ["TestDatabase:AllowedHosts"] = ""
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, configEmptyAllowedHosts));
+
+        var configWhitespaceAllowedHosts = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TestDatabase:AllowProvisioning"] = "true",
+                ["TestDatabase:AllowedHosts"] = "   ; ;  "
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, configWhitespaceAllowedHosts));
+
+        // 3. Unapproved admin host throws InvalidOperationException
         var unapprovedAdmin = "Host=prod-db.maintenx.internal;Port=5432;Database=postgres;Username=postgres;Password=pass;";
         var configApprovedHosts = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -871,8 +961,26 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
             })
             .Build();
 
-        Assert.Throws<InvalidOperationException>(() =>
+        var adminHostEx = Assert.Throws<InvalidOperationException>(() =>
             TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", unapprovedAdmin, validTest, configApprovedHosts));
+        Assert.Contains("Admin connection host", adminHostEx.Message);
+
+        // 4. Unapproved test host throws InvalidOperationException
+        var unapprovedTest = "Host=staging-db.maintenx.internal;Port=5432;Database=postgres;Username=maintenx_app;Password=pass;";
+        var testHostEx = Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, unapprovedTest, configApprovedHosts));
+        Assert.Contains("Test connection host", testHostEx.Message);
+
+        // 5. Unapproved or dangerous database names throw InvalidOperationException
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_dev", validAdmin, validTest, configApprovedHosts));
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("postgres", validAdmin, validTest, configApprovedHosts));
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("arbitrary_database", validAdmin, validTest, configApprovedHosts));
+
+        // 6. Valid configuration passes without throwing
+        TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, configApprovedHosts);
     }
 
     [Fact]
@@ -984,6 +1092,59 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
             checkCmd.CommandText = $"SELECT COUNT(*) FROM pg_database WHERE datname = '{disposableDbName}';";
             var count = Convert.ToInt64(await checkCmd.ExecuteScalarAsync());
             Assert.Equal(0L, count);
+        }
+    }
+
+    [Fact]
+    public async Task DB020_FixtureInitializationFailure_GuaranteesDatabaseCleanupAndSurfacesError()
+    {
+        var config = _baseFactory.Services.GetRequiredService<IConfiguration>();
+        var simulatedDbName = $"maintenx_test_sim_fail_{Guid.NewGuid():N}";
+        bool databaseExistedDuringFailure = false;
+
+        // Exercise the real fixture initialization path with an intentional post-provision failure
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await TestDatabaseGuard.ProvisionAndInitializeAsync(
+                _adminConnectionString,
+                _testConnectionString,
+                config,
+                initializeSchemaAsync: async (isolatedConnectionString) =>
+                {
+                    // Verify the disposable database was genuinely created in PostgreSQL
+                    using (var checkConn = new NpgsqlConnection(_adminConnectionString))
+                    {
+                        await checkConn.OpenAsync();
+                        using var checkCmd = checkConn.CreateCommand();
+                        checkCmd.CommandText = $"SELECT COUNT(*) FROM pg_database WHERE datname = '{simulatedDbName}';";
+                        var count = Convert.ToInt64(await checkCmd.ExecuteScalarAsync());
+                        databaseExistedDuringFailure = (count == 1L);
+                    }
+
+                    // Intentionally throw during initialization
+                    throw new InvalidOperationException("Simulated post-provision migration/setup failure.");
+                },
+                customDbName: simulatedDbName);
+        });
+
+        // 1. Verify failure is surfaced to the test runner
+        Assert.NotNull(exception);
+        Assert.Contains("Failed to connect or initialize isolated test database", exception.Message);
+        Assert.Contains(simulatedDbName, exception.Message);
+        Assert.NotNull(exception.InnerException);
+        Assert.Equal("Simulated post-provision migration/setup failure.", exception.InnerException.Message);
+
+        // 2. Verify the database was indeed created before the failure occurred
+        Assert.True(databaseExistedDuringFailure, "Disposable database must have been provisioned prior to initialization failure.");
+
+        // 3. Verify cleanup removed the database and no disposable database was left behind
+        using (var verifyConn = new NpgsqlConnection(_adminConnectionString))
+        {
+            await verifyConn.OpenAsync();
+            using var verifyCmd = verifyConn.CreateCommand();
+            verifyCmd.CommandText = $"SELECT COUNT(*) FROM pg_database WHERE datname = '{simulatedDbName}';";
+            var remainingCount = Convert.ToInt64(await verifyCmd.ExecuteScalarAsync());
+            Assert.Equal(0L, remainingCount);
         }
     }
 }
