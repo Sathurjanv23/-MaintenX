@@ -1,5 +1,6 @@
 namespace MaintenX.UnitTests.Domain.Auth;
 
+using System.Reflection;
 using MaintenX.Api.Domain.Auth;
 using Xunit;
 
@@ -21,11 +22,22 @@ public class UserTests
         Assert.Equal(64, user.SecurityStamp.Length); // 32 bytes hex encoded = 64 characters
         Assert.Equal(UserStatus.Active, user.Status);
         Assert.Equal(0, user.FailedLoginAttempts);
+        Assert.Null(user.FailedLoginWindowStartedAtUtc);
         Assert.Null(user.LockoutEndUtc);
         Assert.Null(user.LastLoginAtUtc);
         Assert.Equal(now, user.CreatedAtUtc);
         Assert.Equal(now, user.UpdatedAtUtc);
         Assert.Equal(1, user.Version);
+    }
+
+    [Fact]
+    public void UserStatus_HasOnlyActiveSuspendedDeactivatedValues()
+    {
+        var names = Enum.GetNames<UserStatus>();
+        Assert.Equal(3, names.Length);
+        Assert.Contains(nameof(UserStatus.Active), names);
+        Assert.Contains(nameof(UserStatus.Suspended), names);
+        Assert.Contains(nameof(UserStatus.Deactivated), names);
     }
 
     [Theory]
@@ -84,128 +96,215 @@ public class UserTests
     }
 
     [Fact]
-    public void IsLockedOut_WhenLockoutInFuture_ReturnsTrue()
+    public void RecordFailedLogin_ProgressionWithinRollingWindow_AppliesLockoutAtThreshold()
     {
-        var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash);
-        user.LockoutEndUtc = now.AddMinutes(15);
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
 
-        Assert.True(user.IsLockedOut(now));
-        Assert.False(user.CanAuthenticate(now));
-    }
-
-    [Fact]
-    public void IsLockedOut_WhenLockoutPassed_ReturnsFalse()
-    {
-        var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash);
-        user.LockoutEndUtc = now.AddMinutes(-1);
-
-        Assert.False(user.IsLockedOut(now));
-        Assert.True(user.CanAuthenticate(now));
-    }
-
-    [Fact]
-    public void RecordFailedLogin_BelowThreshold_IncrementsCountWithoutLockout()
-    {
-        var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash);
-
-        user.RecordFailedLogin(now, maxFailedAttempts: 5);
-
+        // 1st failure at T0
+        user.RecordFailedLogin(t0);
         Assert.Equal(1, user.FailedLoginAttempts);
+        Assert.Equal(t0, user.FailedLoginWindowStartedAtUtc);
         Assert.Null(user.LockoutEndUtc);
-        Assert.False(user.IsLockedOut(now));
-        Assert.Equal(2, user.Version);
+        Assert.False(user.IsLockedOut(t0));
+
+        // 2nd failure at T0 + 2m
+        user.RecordFailedLogin(t0.AddMinutes(2));
+        Assert.Equal(2, user.FailedLoginAttempts);
+        Assert.Equal(t0, user.FailedLoginWindowStartedAtUtc);
+
+        // 3rd failure at T0 + 5m
+        user.RecordFailedLogin(t0.AddMinutes(5));
+        Assert.Equal(3, user.FailedLoginAttempts);
+        Assert.Equal(t0, user.FailedLoginWindowStartedAtUtc);
+
+        // 4th failure at T0 + 10m
+        user.RecordFailedLogin(t0.AddMinutes(10));
+        Assert.Equal(4, user.FailedLoginAttempts);
+        Assert.Equal(t0, user.FailedLoginWindowStartedAtUtc);
+
+        // 5th failure at T0 + 14m (within 15m window) -> triggers lockout
+        var tLockout = t0.AddMinutes(14);
+        user.RecordFailedLogin(tLockout);
+        Assert.Equal(0, user.FailedLoginAttempts);
+        Assert.Null(user.FailedLoginWindowStartedAtUtc);
+        Assert.NotNull(user.LockoutEndUtc);
+        Assert.Equal(tLockout.Add(User.DefaultLockoutDuration), user.LockoutEndUtc);
+        Assert.True(user.IsLockedOut(tLockout));
+        Assert.False(user.CanAuthenticate(tLockout));
     }
 
     [Fact]
-    public void RecordFailedLogin_ReachingThreshold_AppliesLockout()
+    public void RecordFailedLogin_WhenWindowExpires_DiscardsOldFailuresAndStartsNewWindow()
+    {
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
+
+        // 4 failures within first 10 minutes
+        for (int i = 0; i < 4; i++)
+        {
+            user.RecordFailedLogin(t0.AddMinutes(i * 2));
+        }
+        Assert.Equal(4, user.FailedLoginAttempts);
+        Assert.Equal(t0, user.FailedLoginWindowStartedAtUtc);
+        Assert.Null(user.LockoutEndUtc);
+
+        // Next failure arrives at T0 + 16m (after the 15m window expired)
+        var tNew = t0.AddMinutes(16);
+        user.RecordFailedLogin(tNew);
+
+        // Counter MUST reset to 1 and start fresh window at tNew
+        Assert.Equal(1, user.FailedLoginAttempts);
+        Assert.Equal(tNew, user.FailedLoginWindowStartedAtUtc);
+        Assert.Null(user.LockoutEndUtc);
+        Assert.False(user.IsLockedOut(tNew));
+    }
+
+    [Fact]
+    public void RecordFailedLogin_ExactWindowExpiryBoundary_ResetsWindow()
+    {
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
+
+        user.RecordFailedLogin(t0);
+        Assert.Equal(1, user.FailedLoginAttempts);
+
+        // Failure arrives exactly at T0 + 15m
+        var tExactBoundary = t0.AddMinutes(15);
+        user.RecordFailedLogin(tExactBoundary);
+
+        // Exactly at boundary, window has expired -> fresh window starts with 1 attempt
+        Assert.Equal(1, user.FailedLoginAttempts);
+        Assert.Equal(tExactBoundary, user.FailedLoginWindowStartedAtUtc);
+    }
+
+    [Fact]
+    public void RecordFailedLogin_WithInvalidParameters_ThrowsArgumentOutOfRangeException()
     {
         var now = DateTime.UtcNow;
         var user = User.Create(ValidEmail, ValidPasswordHash);
 
-        for (int i = 1; i <= 5; i++)
-        {
-            user.RecordFailedLogin(now, maxFailedAttempts: 5, lockoutDuration: TimeSpan.FromMinutes(20));
-        }
+        // maxFailedAttempts <= 0
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            user.RecordFailedLogin(now, maxFailedAttempts: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            user.RecordFailedLogin(now, maxFailedAttempts: -1));
 
-        Assert.Equal(5, user.FailedLoginAttempts);
-        Assert.NotNull(user.LockoutEndUtc);
-        Assert.Equal(now.AddMinutes(20), user.LockoutEndUtc);
-        Assert.True(user.IsLockedOut(now));
-        Assert.False(user.CanAuthenticate(now));
+        // lockoutDuration <= Zero
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            user.RecordFailedLogin(now, lockoutDuration: TimeSpan.Zero));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            user.RecordFailedLogin(now, lockoutDuration: TimeSpan.FromMinutes(-5)));
+
+        // windowDuration <= Zero
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            user.RecordFailedLogin(now, windowDuration: TimeSpan.Zero));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            user.RecordFailedLogin(now, windowDuration: TimeSpan.FromMinutes(-1)));
     }
 
     [Fact]
-    public void RecordFailedLogin_WhenUserSuspendedOrDeactivated_DoesNotAlterLockoutState()
+    public void RecordFailedLogin_WhenUserSuspendedOrDeactivated_DoesNotAlterState()
     {
         var now = DateTime.UtcNow;
         var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Suspended);
 
-        user.RecordFailedLogin(now, maxFailedAttempts: 5);
+        user.RecordFailedLogin(now);
 
         Assert.Equal(0, user.FailedLoginAttempts);
+        Assert.Null(user.FailedLoginWindowStartedAtUtc);
         Assert.Null(user.LockoutEndUtc);
     }
 
     [Fact]
     public void RecordSuccessfulLogin_WhenActiveAndNotLocked_ResetsCountersAndUpdatesTimestamp()
     {
-        var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash);
-        user.FailedLoginAttempts = 3;
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
 
-        user.RecordSuccessfulLogin(now);
+        user.RecordFailedLogin(t0);
+        user.RecordFailedLogin(t0.AddMinutes(1));
+        Assert.Equal(2, user.FailedLoginAttempts);
+        Assert.NotNull(user.FailedLoginWindowStartedAtUtc);
+
+        var tSuccess = t0.AddMinutes(5);
+        user.RecordSuccessfulLogin(tSuccess);
 
         Assert.Equal(0, user.FailedLoginAttempts);
+        Assert.Null(user.FailedLoginWindowStartedAtUtc);
         Assert.Null(user.LockoutEndUtc);
-        Assert.Equal(now, user.LastLoginAtUtc);
-        Assert.Equal(now, user.UpdatedAtUtc);
+        Assert.Equal(tSuccess, user.LastLoginAtUtc);
+        Assert.Equal(tSuccess, user.UpdatedAtUtc);
     }
 
     [Fact]
     public void RecordSuccessfulLogin_WhenLockedOut_ThrowsInvalidOperationException()
     {
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
+
+        // Force lockout via 5 failures
+        for (int i = 0; i < 5; i++)
+        {
+            user.RecordFailedLogin(t0.AddMinutes(i));
+        }
+        Assert.True(user.IsLockedOut(t0.AddMinutes(4)));
+
+        Assert.Throws<InvalidOperationException>(() => user.RecordSuccessfulLogin(t0.AddMinutes(5)));
+    }
+
+    [Fact]
+    public void RecordSuccessfulLogin_WhenSuspended_ThrowsInvalidOperationException()
+    {
         var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash);
-        user.LockoutEndUtc = now.AddMinutes(10);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Suspended);
 
         Assert.Throws<InvalidOperationException>(() => user.RecordSuccessfulLogin(now));
     }
 
     [Fact]
-    public void ResetFailedLogin_ClearsFailedAttemptsAndActiveLockout()
+    public void ResetFailedLogin_ClearsFailedAttemptsWindowAndActiveLockout()
     {
-        var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash);
-        user.FailedLoginAttempts = 4;
-        user.LockoutEndUtc = now.AddMinutes(15);
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
 
-        user.ResetFailedLogin(now);
+        for (int i = 0; i < 5; i++)
+        {
+            user.RecordFailedLogin(t0.AddMinutes(i));
+        }
+        Assert.NotNull(user.LockoutEndUtc);
+
+        user.ResetFailedLogin(t0.AddMinutes(10));
 
         Assert.Equal(0, user.FailedLoginAttempts);
+        Assert.Null(user.FailedLoginWindowStartedAtUtc);
         Assert.Null(user.LockoutEndUtc);
-        Assert.False(user.IsLockedOut(now));
+        Assert.False(user.IsLockedOut(t0.AddMinutes(10)));
     }
 
     [Fact]
     public void UpdatePassword_WhenActive_UpdatesHashRotatesStampAndClearsLockout()
     {
-        var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash);
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
         var oldStamp = user.SecurityStamp;
-        user.FailedLoginAttempts = 3;
-        user.LockoutEndUtc = now.AddMinutes(15);
+
+        for (int i = 0; i < 5; i++)
+        {
+            user.RecordFailedLogin(t0.AddMinutes(i));
+        }
+        Assert.NotNull(user.LockoutEndUtc);
 
         var newHash = "$argon2id$v=19$newpasswordhash";
-        user.UpdatePassword(newHash, now);
+        var tUpdate = t0.AddMinutes(10);
+        user.UpdatePassword(newHash, tUpdate);
 
         Assert.Equal(newHash, user.PasswordHash);
         Assert.NotEqual(oldStamp, user.SecurityStamp);
         Assert.Equal(0, user.FailedLoginAttempts);
+        Assert.Null(user.FailedLoginWindowStartedAtUtc);
         Assert.Null(user.LockoutEndUtc);
-        Assert.Equal(now, user.UpdatedAtUtc);
+        Assert.Equal(tUpdate, user.UpdatedAtUtc);
     }
 
     [Theory]
@@ -244,35 +343,57 @@ public class UserTests
     public void StatusTransitions_LifecycleWorkflow()
     {
         var now = DateTime.UtcNow;
-        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.PendingVerification);
-
-        // 1. PendingVerification -> Active
-        user.Activate(now);
+        // User starts Active
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, now);
         Assert.Equal(UserStatus.Active, user.Status);
+        Assert.True(user.CanAuthenticate(now));
 
-        // 2. Active -> Suspended (rotates security stamp)
+        // 1. Active -> Suspended (rotates security stamp)
         var stampBeforeSuspend = user.SecurityStamp;
         user.Suspend(now);
         Assert.Equal(UserStatus.Suspended, user.Status);
         Assert.NotEqual(stampBeforeSuspend, user.SecurityStamp);
         Assert.False(user.CanAuthenticate(now));
 
-        // 3. Suspended -> Reactivate
+        // 2. Suspended -> Reactivate (rotates security stamp)
         var stampBeforeReactivate = user.SecurityStamp;
         user.Reactivate(now);
         Assert.Equal(UserStatus.Active, user.Status);
         Assert.NotEqual(stampBeforeReactivate, user.SecurityStamp);
         Assert.True(user.CanAuthenticate(now));
 
-        // 4. Active -> Deactivate (Terminal state)
+        // 3. Active -> Deactivate (Terminal state)
         user.Deactivate(now);
         Assert.Equal(UserStatus.Deactivated, user.Status);
         Assert.False(user.CanAuthenticate(now));
 
-        // 5. Deactivated account cannot be reactivated or activated
-        Assert.Throws<InvalidOperationException>(() => user.Activate(now));
+        // 4. Deactivated account cannot be reactivated or suspended
         Assert.Throws<InvalidOperationException>(() => user.Reactivate(now));
         Assert.Throws<InvalidOperationException>(() => user.Suspend(now));
+    }
+
+    [Fact]
+    public void Reactivate_WhenNotSuspended_ThrowsInvalidOperationException()
+    {
+        var now = DateTime.UtcNow;
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, now);
+
+        Assert.Throws<InvalidOperationException>(() => user.Reactivate(now));
+    }
+
+    [Fact]
+    public void DomainInvariants_UserPropertiesMustNotHavePublicSetters()
+    {
+        var properties = typeof(User).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotEmpty(properties);
+
+        foreach (var prop in properties)
+        {
+            var setMethod = prop.GetSetMethod(nonPublic: false);
+            Assert.True(
+                setMethod == null,
+                $"Property '{prop.Name}' on '{nameof(User)}' must not have a public setter.");
+        }
     }
 
     [Fact]

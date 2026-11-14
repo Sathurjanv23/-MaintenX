@@ -4,11 +4,15 @@ using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
 /// <summary>
-/// User identity entity managing credentials, security stamp, lockout lifecycle, and account status.
+/// User identity entity managing credentials, security stamp, rolling-window lockout lifecycle, and account status.
 /// Independent of EF Core and ASP.NET Core infrastructure.
 /// </summary>
 public sealed class User
 {
+    public const int DefaultMaxFailedAttempts = 5;
+    public static readonly TimeSpan DefaultLockoutDuration = TimeSpan.FromMinutes(15);
+    public static readonly TimeSpan DefaultFailedLoginWindow = TimeSpan.FromMinutes(15);
+
     private static readonly Regex EmailFormatRegex = new(
         @"^[^@\s]+@[^@\s]+\.[^@\s]+$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -16,60 +20,65 @@ public sealed class User
     /// <summary>
     /// Unique UUID primary key for the user.
     /// </summary>
-    public Guid Id { get; set; }
+    public Guid Id { get; private set; }
 
     /// <summary>
     /// Normalized unique email address (trimmed, lowercase invariant).
     /// </summary>
-    public string Email { get; set; } = string.Empty;
+    public string Email { get; private set; } = string.Empty;
 
     /// <summary>
     /// Cryptographic password hash (e.g. Argon2id / PBKDF2). Never exposed via public representations.
     /// </summary>
-    public string PasswordHash { get; set; } = string.Empty;
+    public string PasswordHash { get; private set; } = string.Empty;
 
     /// <summary>
     /// Random security stamp rotated upon credential mutations or account suspension to invalidate active sessions and tokens.
     /// </summary>
-    public string SecurityStamp { get; set; } = string.Empty;
+    public string SecurityStamp { get; private set; } = string.Empty;
 
     /// <summary>
     /// Operational status of the user account.
     /// </summary>
-    public UserStatus Status { get; set; } = UserStatus.PendingVerification;
+    public UserStatus Status { get; private set; } = UserStatus.Active;
 
     /// <summary>
-    /// Counter tracking consecutive failed authentication attempts within the current lockout evaluation window.
+    /// Counter tracking consecutive failed authentication attempts within the current rolling window.
     /// </summary>
-    public int FailedLoginAttempts { get; set; }
+    public int FailedLoginAttempts { get; private set; }
+
+    /// <summary>
+    /// UTC timestamp marking the start of the current rolling failure accumulation window, or null if no failures are active.
+    /// </summary>
+    public DateTime? FailedLoginWindowStartedAtUtc { get; private set; }
 
     /// <summary>
     /// UTC timestamp marking the expiration of an active account lockout, or null if the account is not locked out.
     /// </summary>
-    public DateTime? LockoutEndUtc { get; set; }
+    public DateTime? LockoutEndUtc { get; private set; }
 
     /// <summary>
     /// UTC timestamp of the most recent successful login, or null if the user has never logged in.
     /// </summary>
-    public DateTime? LastLoginAtUtc { get; set; }
+    public DateTime? LastLoginAtUtc { get; private set; }
 
     /// <summary>
     /// UTC timestamp of entity creation.
     /// </summary>
-    public DateTime CreatedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>
     /// UTC timestamp of the most recent update.
     /// </summary>
-    public DateTime UpdatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; private set; }
 
     /// <summary>
     /// Optimistic concurrency token tracking row mutations.
     /// </summary>
-    public long Version { get; set; }
+    public long Version { get; private set; }
 
     /// <summary>
-    /// Parameterless constructor required by EF Core.
+    /// Parameterless constructor required by EF Core for entity materialization.
     /// </summary>
     public User()
     {
@@ -170,6 +179,7 @@ public sealed class User
             SecurityStamp = GenerateSecurityStamp(),
             Status = status,
             FailedLoginAttempts = 0,
+            FailedLoginWindowStartedAtUtc = null,
             LockoutEndUtc = null,
             LastLoginAtUtc = null,
             CreatedAtUtc = now,
@@ -195,28 +205,71 @@ public sealed class User
     }
 
     /// <summary>
-    /// Records a failed authentication attempt. Increments failed login count and triggers lockout if threshold is reached.
-    /// Inactive or suspended accounts do not update lockout state.
+    /// Records a failed authentication attempt using a rolling failure accumulation window.
+    /// If a failure arrives after the rolling window has expired, earlier failures are discarded and a new window begins.
+    /// If the consecutive failure count reaches maxFailedAttempts within the rolling window, an account lockout is applied.
+    /// Inactive or suspended accounts do not update failed attempt counters or lockout timestamps.
     /// </summary>
     /// <param name="utcNow">Current UTC timestamp.</param>
-    /// <param name="maxFailedAttempts">Threshold before account lockout is applied (defaults to 5).</param>
-    /// <param name="lockoutDuration">Duration of account lockout (defaults to 15 minutes).</param>
+    /// <param name="maxFailedAttempts">Threshold before account lockout is applied (must be strictly positive; defaults to 5).</param>
+    /// <param name="lockoutDuration">Duration of account lockout (must be strictly positive; defaults to 15 minutes).</param>
+    /// <param name="windowDuration">Duration of the rolling failure window (must be strictly positive; defaults to 15 minutes).</param>
     public void RecordFailedLogin(
         DateTime utcNow,
-        int maxFailedAttempts = 5,
-        TimeSpan? lockoutDuration = null)
+        int maxFailedAttempts = DefaultMaxFailedAttempts,
+        TimeSpan? lockoutDuration = null,
+        TimeSpan? windowDuration = null)
     {
+        if (maxFailedAttempts <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxFailedAttempts),
+                maxFailedAttempts,
+                "Maximum failed attempts threshold must be greater than zero.");
+        }
+
+        var effectiveLockout = lockoutDuration ?? DefaultLockoutDuration;
+        if (effectiveLockout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(lockoutDuration),
+                effectiveLockout,
+                "Lockout duration must be strictly positive.");
+        }
+
+        var effectiveWindow = windowDuration ?? DefaultFailedLoginWindow;
+        if (effectiveWindow <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(windowDuration),
+                effectiveWindow,
+                "Failed login evaluation window duration must be strictly positive.");
+        }
+
         if (Status != UserStatus.Active)
         {
             return;
         }
 
-        FailedLoginAttempts++;
+        // Evaluate rolling failure window
+        if (!FailedLoginWindowStartedAtUtc.HasValue || utcNow >= FailedLoginWindowStartedAtUtc.Value.Add(effectiveWindow))
+        {
+            // Previous window expired or this is the first recorded failure: start fresh window
+            FailedLoginAttempts = 1;
+            FailedLoginWindowStartedAtUtc = utcNow;
+        }
+        else
+        {
+            // Within active rolling window: increment counter
+            FailedLoginAttempts++;
+        }
 
+        // Check whether consecutive failure threshold has been reached
         if (FailedLoginAttempts >= maxFailedAttempts)
         {
-            var duration = lockoutDuration ?? TimeSpan.FromMinutes(15);
-            LockoutEndUtc = utcNow.Add(duration);
+            LockoutEndUtc = utcNow.Add(effectiveLockout);
+            FailedLoginAttempts = 0;
+            FailedLoginWindowStartedAtUtc = null;
         }
 
         UpdatedAtUtc = utcNow;
@@ -224,7 +277,7 @@ public sealed class User
     }
 
     /// <summary>
-    /// Records a successful authentication event. Resets failed login counters and updates last login timestamp.
+    /// Records a successful authentication event. Resets failed login counters, clears lockout, and updates last login timestamp.
     /// </summary>
     /// <param name="utcNow">Current UTC timestamp.</param>
     /// <exception cref="InvalidOperationException">Thrown if the user cannot authenticate (e.g. suspended, deactivated, or locked out).</exception>
@@ -236,6 +289,7 @@ public sealed class User
         }
 
         FailedLoginAttempts = 0;
+        FailedLoginWindowStartedAtUtc = null;
         LockoutEndUtc = null;
         LastLoginAtUtc = utcNow;
         UpdatedAtUtc = utcNow;
@@ -243,12 +297,13 @@ public sealed class User
     }
 
     /// <summary>
-    /// Resets failed login counters and clears active lockout.
+    /// Resets failed login counters, rolling window, and active lockout.
     /// </summary>
     /// <param name="utcNow">Current UTC timestamp.</param>
     public void ResetFailedLogin(DateTime utcNow)
     {
         FailedLoginAttempts = 0;
+        FailedLoginWindowStartedAtUtc = null;
         LockoutEndUtc = null;
         UpdatedAtUtc = utcNow;
         Version++;
@@ -273,6 +328,7 @@ public sealed class User
         PasswordHash = newPasswordHash.Trim();
         SecurityStamp = GenerateSecurityStamp();
         FailedLoginAttempts = 0;
+        FailedLoginWindowStartedAtUtc = null;
         LockoutEndUtc = null;
         UpdatedAtUtc = utcNow;
         Version++;
@@ -285,23 +341,6 @@ public sealed class User
     public void RotateSecurityStamp(DateTime utcNow)
     {
         SecurityStamp = GenerateSecurityStamp();
-        UpdatedAtUtc = utcNow;
-        Version++;
-    }
-
-    /// <summary>
-    /// Transitions account status to Active (e.g. from PendingVerification).
-    /// </summary>
-    /// <param name="utcNow">Current UTC timestamp.</param>
-    /// <exception cref="InvalidOperationException">Thrown if the account is permanently deactivated.</exception>
-    public void Activate(DateTime utcNow)
-    {
-        if (Status == UserStatus.Deactivated)
-        {
-            throw new InvalidOperationException($"Permanently deactivated user '{Id}' cannot be activated.");
-        }
-
-        Status = UserStatus.Active;
         UpdatedAtUtc = utcNow;
         Version++;
     }
@@ -325,7 +364,7 @@ public sealed class User
     }
 
     /// <summary>
-    /// Reactivates a suspended user account, rotating the security stamp.
+    /// Reactivates a suspended user account, rotating the security stamp and clearing lockout/failure state.
     /// </summary>
     /// <param name="utcNow">Current UTC timestamp.</param>
     /// <exception cref="InvalidOperationException">Thrown if the account is not currently suspended.</exception>
@@ -339,6 +378,7 @@ public sealed class User
         Status = UserStatus.Active;
         SecurityStamp = GenerateSecurityStamp();
         FailedLoginAttempts = 0;
+        FailedLoginWindowStartedAtUtc = null;
         LockoutEndUtc = null;
         UpdatedAtUtc = utcNow;
         Version++;
@@ -362,6 +402,6 @@ public sealed class User
     /// </summary>
     public override string ToString()
     {
-        return $"User [Id={Id}, Email={Email}, Status={Status}, FailedAttempts={FailedLoginAttempts}, IsLockedOut={LockoutEndUtc.HasValue}]";
+        return $"User [Id={Id}, Email={Email}, Status={Status}, FailedAttempts={FailedLoginAttempts}, IsLockedOut={IsLockedOut(DateTime.UtcNow)}]";
     }
 }

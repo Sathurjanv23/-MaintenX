@@ -1,97 +1,105 @@
 namespace MaintenX.Api.Domain.Auth;
 
+using System.Net;
+
 /// <summary>
 /// Immutable security audit event recording authentication, authorization, session, and credential lifecycle events.
-/// Never stores passwords, raw tokens, or security stamps.
+/// Never stores passwords, password hashes, raw tokens, token hashes, or submitted email addresses.
+/// Enforces structured safe metadata and explicit IP address validation.
 /// Independent of EF Core and ASP.NET Core infrastructure.
 /// </summary>
 public sealed class SecurityAuditEvent
 {
-    private static readonly string[] ProhibitedSensitiveKeywords =
-    [
-        "password",
-        "secret",
-        "token=",
-        "bearer ",
-        "securitystamp",
-        "hash"
-    ];
-
     /// <summary>
     /// Unique UUID primary key for the audit event.
     /// </summary>
-    public Guid Id { get; set; }
+    public Guid Id { get; private set; }
 
     /// <summary>
-    /// Type of security event.
+    /// Categorized type of security event.
     /// </summary>
-    public SecurityAuditEventType EventType { get; set; }
+    public SecurityAuditEventType EventType { get; private set; }
 
     /// <summary>
-    /// User identifier associated with the event, or null if the event is unauthenticated or pre-identification.
+    /// User identifier associated with the event, or null if unauthenticated or pre-identification.
     /// </summary>
-    public Guid? UserId { get; set; }
+    public Guid? UserId { get; private set; }
 
     /// <summary>
     /// Session identifier associated with the event, or null if no session context exists.
     /// </summary>
-    public Guid? SessionId { get; set; }
+    public Guid? SessionId { get; private set; }
 
     /// <summary>
-    /// Client IP address from which the request originated (max 45 characters to accommodate IPv6 strings).
+    /// Validated IPv4 or IPv6 client IP address string, or null if the client IP was unavailable.
     /// </summary>
-    public string? ClientIp { get; set; }
+    public string? ClientIp { get; private set; }
 
     /// <summary>
-    /// Structured JSON or textual metadata containing safe, non-sensitive audit details.
+    /// Structured, validated metadata containing approved non-sensitive audit fields.
     /// </summary>
-    public string? Details { get; set; }
+    public SecurityAuditMetadata? Metadata { get; private set; }
+
+    /// <summary>
+    /// Explicit audit reason from structured metadata.
+    /// </summary>
+    public string? Reason => Metadata?.Reason;
+
+    /// <summary>
+    /// Audit lineage identifier or depth tracing token replacement hierarchy.
+    /// </summary>
+    public string? DetectedLineage => Metadata?.DetectedLineage;
+
+    /// <summary>
+    /// Action taken in response to the security event.
+    /// </summary>
+    public string? ActionTaken => Metadata?.ActionTaken;
 
     /// <summary>
     /// UTC timestamp of event creation.
     /// </summary>
-    public DateTime CreatedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>
-    /// Parameterless constructor required by EF Core.
+    /// Parameterless constructor required by EF Core for entity materialization.
     /// </summary>
     public SecurityAuditEvent()
     {
     }
 
     /// <summary>
-    /// Validates that structured audit details do not contain sensitive secrets or prohibited keywords.
+    /// Validates and normalizes an input client IP address string against IPv4 and IPv6 syntax rules.
     /// </summary>
-    /// <param name="details">Audit details string to validate.</param>
-    /// <exception cref="ArgumentException">Thrown if details contain obvious secret values or prohibited patterns.</exception>
-    public static void ValidateDetails(string? details)
+    /// <param name="clientIp">Raw IP string input, or null if unavailable.</param>
+    /// <returns>Canonical IP address string, or null if unavailable.</returns>
+    /// <exception cref="ArgumentException">Thrown when an input string is provided but is not a valid IPv4 or IPv6 address.</exception>
+    public static string? ValidateAndNormalizeClientIp(string? clientIp)
     {
-        if (string.IsNullOrWhiteSpace(details))
+        if (string.IsNullOrWhiteSpace(clientIp))
         {
-            return;
+            return null;
         }
 
-        var lower = details.ToLowerInvariant();
-        foreach (var keyword in ProhibitedSensitiveKeywords)
+        var trimmed = clientIp.Trim();
+        if (!IPAddress.TryParse(trimmed, out var parsedIp))
         {
-            if (lower.Contains(keyword))
-            {
-                throw new ArgumentException(
-                    $"Audit details contain prohibited sensitive keyword '{keyword}'. Sensitive credentials, password hashes, and raw tokens must never be logged.",
-                    nameof(details));
-            }
+            throw new ArgumentException(
+                $"Client IP address '{clientIp}' is invalid. Must be a valid IPv4 or IPv6 address.",
+                nameof(clientIp));
         }
+
+        return parsedIp.ToString();
     }
 
     /// <summary>
-    /// Factory method for instantiating an immutable SecurityAuditEvent record with safety validations.
+    /// Factory method for instantiating an immutable SecurityAuditEvent record with structured safe metadata.
     /// </summary>
     /// <param name="eventType">Categorized security event type.</param>
     /// <param name="utcNow">Creation timestamp in UTC.</param>
     /// <param name="userId">Optional associated user identifier.</param>
     /// <param name="sessionId">Optional associated session identifier.</param>
-    /// <param name="clientIp">Optional client IP address.</param>
-    /// <param name="details">Optional structured non-sensitive details.</param>
+    /// <param name="clientIp">Optional client IP address (must be valid IPv4/IPv6 if supplied).</param>
+    /// <param name="metadata">Optional structured safe metadata.</param>
     /// <returns>A validated SecurityAuditEvent instance.</returns>
     public static SecurityAuditEvent Create(
         SecurityAuditEventType eventType,
@@ -99,19 +107,9 @@ public sealed class SecurityAuditEvent
         Guid? userId = null,
         Guid? sessionId = null,
         string? clientIp = null,
-        string? details = null)
+        SecurityAuditMetadata? metadata = null)
     {
-        ValidateDetails(details);
-
-        string? sanitizedIp = null;
-        if (!string.IsNullOrWhiteSpace(clientIp))
-        {
-            sanitizedIp = clientIp.Trim();
-            if (sanitizedIp.Length > 45)
-            {
-                sanitizedIp = sanitizedIp[..45];
-            }
-        }
+        var validatedIp = ValidateAndNormalizeClientIp(clientIp);
 
         return new SecurityAuditEvent
         {
@@ -119,10 +117,27 @@ public sealed class SecurityAuditEvent
             EventType = eventType,
             UserId = userId == Guid.Empty ? null : userId,
             SessionId = sessionId == Guid.Empty ? null : sessionId,
-            ClientIp = sanitizedIp,
-            Details = string.IsNullOrWhiteSpace(details) ? null : details.Trim(),
+            ClientIp = validatedIp,
+            Metadata = metadata,
             CreatedAtUtc = utcNow
         };
+    }
+
+    /// <summary>
+    /// Convenience factory method taking individual approved metadata fields.
+    /// </summary>
+    public static SecurityAuditEvent Create(
+        SecurityAuditEventType eventType,
+        DateTime utcNow,
+        Guid? userId,
+        Guid? sessionId,
+        string? clientIp,
+        string reason,
+        string? detectedLineage = null,
+        string? actionTaken = null)
+    {
+        var meta = SecurityAuditMetadata.Create(reason, detectedLineage, actionTaken);
+        return Create(eventType, utcNow, userId, sessionId, clientIp, meta);
     }
 
     /// <summary>
@@ -130,6 +145,6 @@ public sealed class SecurityAuditEvent
     /// </summary>
     public override string ToString()
     {
-        return $"SecurityAuditEvent [Id={Id}, EventType={EventType}, UserId={UserId?.ToString() ?? "Anonymous"}, SessionId={SessionId?.ToString() ?? "None"}, ClientIp={ClientIp ?? "Unknown"}, CreatedAtUtc={CreatedAtUtc:O}]";
+        return $"SecurityAuditEvent [Id={Id}, EventType={EventType}, UserId={UserId?.ToString() ?? "Anonymous"}, SessionId={SessionId?.ToString() ?? "None"}, ClientIp={ClientIp ?? "Unavailable"}, Reason={Reason ?? "None"}, CreatedAtUtc={CreatedAtUtc:O}]";
     }
 }

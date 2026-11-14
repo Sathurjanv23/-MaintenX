@@ -9,37 +9,37 @@ public sealed class UserSession
     /// <summary>
     /// Unique UUID primary key for the session.
     /// </summary>
-    public Guid Id { get; set; }
+    public Guid Id { get; private set; }
 
     /// <summary>
     /// Foreign key identifier of the owning user.
     /// </summary>
-    public Guid UserId { get; set; }
+    public Guid UserId { get; private set; }
 
     /// <summary>
     /// UTC timestamp marking when the session was created.
     /// </summary>
-    public DateTime CreatedAtUtc { get; set; }
+    public DateTime CreatedAtUtc { get; private set; }
 
     /// <summary>
     /// UTC timestamp marking absolute session expiration. The session cannot be extended beyond this boundary.
     /// </summary>
-    public DateTime ExpiresAtUtc { get; set; }
+    public DateTime ExpiresAtUtc { get; private set; }
 
     /// <summary>
     /// UTC timestamp when the session was revoked, or null if still unrevoked.
     /// </summary>
-    public DateTime? RevokedAtUtc { get; set; }
+    public DateTime? RevokedAtUtc { get; private set; }
 
     /// <summary>
     /// Standardized reason for revocation, or null if the session has not been revoked.
     /// </summary>
-    public string? RevocationReason { get; set; }
+    public string? RevocationReason { get; private set; }
 
     /// <summary>
     /// Optimistic concurrency token tracking session mutations.
     /// </summary>
-    public long Version { get; set; }
+    public long Version { get; private set; }
 
     /// <summary>
     /// Indicates whether the session has been explicitly revoked.
@@ -47,7 +47,7 @@ public sealed class UserSession
     public bool IsRevoked => RevokedAtUtc.HasValue;
 
     /// <summary>
-    /// Parameterless constructor required by EF Core.
+    /// Parameterless constructor required by EF Core for entity materialization.
     /// </summary>
     public UserSession()
     {
