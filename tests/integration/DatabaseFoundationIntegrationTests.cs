@@ -1205,7 +1205,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
     [InlineData("maintenx_dev", true)]
     [InlineData("_custom123", true)]
     [InlineData("APP_USER", true)]
-    [InlineData("valid_identifier_exactly_sixty_three_characters_long_1234567890123", true)]
+    [InlineData("a_1234567890123456789012345678901234567890123456789012345678901", true)]
     [InlineData("bad;user", false)]
     [InlineData("bad-user", false)]
     [InlineData("123user", false)]
@@ -1213,7 +1213,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
     [InlineData("user'name", false)]
     [InlineData("user name", false)]
     [InlineData("", false)]
-    [InlineData("invalid_identifier_exceeding_sixty_three_characters_long_12345678901", false)]
+    [InlineData("a_12345678901234567890123456789012345678901234567890123456789012", false)]
     public void DB022_InitRolesScript_IdentifierValidation_EnforcesPostgreSqlIdentifierRules(string identifier, bool shouldBeValid)
     {
         var regex = new System.Text.RegularExpressions.Regex("^[a-zA-Z_][a-zA-Z0-9_]{0,62}$");

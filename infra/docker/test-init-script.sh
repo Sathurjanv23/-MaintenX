@@ -15,7 +15,7 @@ fi
 echo "✓ Executable mode verified."
 
 # 2. Test successful initialization with apostrophes and SQL-special characters
-CONTAINER="pg-test-init-$(date +%s)-$RANDOM"
+CONTAINER="pg-test-init-$(date +%s)-$$"
 TEST_PASS="p'a\"\\\$w;--ord!#%&"
 
 echo "Starting disposable PostgreSQL container..."
