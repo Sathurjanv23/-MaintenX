@@ -740,4 +740,305 @@ public class AuthenticationServiceIntegrationTests : IAsyncLifetime
         Assert.NotNull(resetAudit);
         Assert.Equal("10.10.10.10", resetAudit.ClientIp);
     }
+
+    // =========================================================================
+    // 6. GENUINE CONCURRENCY & REHASH REMEDIATION TESTS
+    // =========================================================================
+
+    [Fact]
+    public async Task RegisterAsync_ConcurrentRegistrationForSameEmail_ResultsInExactlyOneUserAndGenericResponses()
+    {
+        var email1 = "concurrent-reg@example.com";
+        var email2 = "CONCURRENT-REG@EXAMPLE.COM";
+        var password = "SecurePassword123!";
+
+        await using var ctx1 = CreateDbContext();
+        await using var ctx2 = CreateDbContext();
+        var sut1 = CreateAuthenticationService(ctx1);
+        var sut2 = CreateAuthenticationService(ctx2);
+
+        var task1 = sut1.RegisterAsync(email1, password, "192.168.1.1");
+        var task2 = sut2.RegisterAsync(email2, password, "192.168.1.2");
+
+        var results = await Task.WhenAll(task1, task2);
+
+        Assert.All(results, r =>
+        {
+            Assert.True(r.IsSuccess);
+            Assert.Equal(RegistrationResult.DefaultGenericMessage, r.Message);
+        });
+
+        await using var verifyContext = CreateDbContext();
+        var users = await verifyContext.Users.Where(u => u.Email == "concurrent-reg@example.com").ToListAsync();
+        Assert.Single(users);
+    }
+
+    [Fact]
+    public async Task LoginAsync_ConcurrentFailedLogins_EnforcesLockoutWithoutLostUpdates()
+    {
+        var email = "concurrent-failed-login@example.com";
+        var password = "CorrectPassword123!";
+
+        await using (var regCtx = CreateDbContext())
+        {
+            var regSut = CreateAuthenticationService(regCtx);
+            await regSut.RegisterAsync(email, password);
+        }
+
+        // Launch 5 concurrent failed logins using separate DbContext instances
+        var tasks = Enumerable.Range(1, 5).Select(async i =>
+        {
+            await using var ctx = CreateDbContext();
+            var sut = CreateAuthenticationService(ctx);
+            return await sut.LoginAsync(email, $"WrongPassword_{i}!", $"10.0.0.{i}");
+        }).ToList();
+
+        var results = await Task.WhenAll(tasks);
+
+        // Row locks serialize failure updates: all 5 are processed and lockout is triggered
+        await using var verifyContext = CreateDbContext();
+        var user = await verifyContext.Users.SingleAsync(u => u.Email == email);
+
+        // Reaches consecutive threshold (5) and enters 15-minute lockout
+        Assert.True(user.IsLockedOut(DateTime.UtcNow));
+        Assert.NotNull(user.LockoutEndUtc);
+
+        // At least one result must reflect the locked out state
+        Assert.Contains(results, r => r.IsLockedOut);
+    }
+
+    [Fact]
+    public async Task LoginAsync_WhenRehashNeeded_UpdatesPasswordHashWithoutRotatingSecurityStamp()
+    {
+        var email = "rehash-success@example.com";
+        var password = "SecurePassword123!";
+
+        await using (var regContext = CreateDbContext())
+        {
+            var regSut = CreateAuthenticationService(regContext);
+            await regSut.RegisterAsync(email, password);
+        }
+
+        User userBefore;
+        await using (var checkContext = CreateDbContext())
+        {
+            userBefore = await checkContext.Users.SingleAsync(u => u.Email == email);
+        }
+
+        var oldHash = userBefore.PasswordHash;
+        var originalStamp = userBefore.SecurityStamp;
+        var oldVersion = userBefore.Version;
+
+        var hasher = new PasswordHasher<User>();
+        var basePwdService = new PasswordSecurityService(hasher);
+        var rehashPwdService = new RehashTriggeringPasswordSecurityService(basePwdService);
+
+        await using var loginContext = CreateDbContext();
+        var sut = CreateAuthenticationService(loginContext, customPasswordSecurityService: rehashPwdService);
+
+        var result = await sut.LoginAsync(email, password, "10.0.0.1");
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Tokens);
+
+        await using var verifyContext = CreateDbContext();
+        var userAfter = await verifyContext.Users.SingleAsync(u => u.Email == email);
+
+        // Password hash updated
+        Assert.NotEqual(oldHash, userAfter.PasswordHash);
+        // Version incremented
+        Assert.True(userAfter.Version > oldVersion);
+        // Security stamp preserved (NOT rotated!)
+        Assert.Equal(originalStamp, userAfter.SecurityStamp);
+    }
+
+    [Fact]
+    public async Task LoginAsync_WhenRehashNeeded_StaleSnapshotAbortsAndDoesNotApplyRehash()
+    {
+        var email = "rehash-stale@example.com";
+        var password = "SecurePassword123!";
+
+        await using (var regContext = CreateDbContext())
+        {
+            var regSut = CreateAuthenticationService(regContext);
+            await regSut.RegisterAsync(email, password);
+        }
+
+        var hasher = new PasswordHasher<User>();
+        var basePwdService = new PasswordSecurityService(hasher);
+
+        // Mutates user concurrently before lock acquisition to simulate stale snapshot race
+        var interceptingPwdService = new InterceptingRehashPasswordSecurityService(basePwdService, async () =>
+        {
+            await using var mutateCtx = CreateDbContext();
+            var userToMutate = await mutateCtx.Users.SingleAsync(u => u.Email == email);
+            userToMutate.UpdatePassword("NewInterveningPasswordHash999!", DateTime.UtcNow);
+            await mutateCtx.SaveChangesAsync();
+        });
+
+        await using var loginContext = CreateDbContext();
+        var sut = CreateAuthenticationService(loginContext, customPasswordSecurityService: interceptingPwdService);
+
+        var result = await sut.LoginAsync(email, password);
+
+        // Snapshot revalidation must detect that version/hash changed and abort
+        Assert.False(result.IsSuccess);
+        Assert.Equal("Invalid email or password.", result.ErrorMessage);
+
+        // Intervening password hash must remain intact
+        await using var verifyContext = CreateDbContext();
+        var user = await verifyContext.Users.SingleAsync(u => u.Email == email);
+        Assert.Equal("NewInterveningPasswordHash999!", user.PasswordHash);
+    }
+
+    [Fact]
+    public async Task RefreshTokenAsync_ReplayOnAlreadyRevokedSession_PreservesOriginalReasonAndPersistsReplayAudit()
+    {
+        var email = "replay-already-revoked@example.com";
+        var password = "SecurePassword123!";
+
+        await using (var regCtx = CreateDbContext())
+        {
+            var regSut = CreateAuthenticationService(regCtx);
+            await regSut.RegisterAsync(email, password);
+        }
+
+        AuthTokenResult initialTokens;
+        Guid userId;
+        await using (var loginCtx = CreateDbContext())
+        {
+            var loginSut = CreateAuthenticationService(loginCtx);
+            var loginRes = await loginSut.LoginAsync(email, password);
+            initialTokens = loginRes.Tokens!;
+            var user = await loginCtx.Users.SingleAsync(u => u.Email == email);
+            userId = user.Id;
+        }
+
+        // 1. Normal rotation (initialTokens.RefreshToken is rotated into rotatedTokens)
+        AuthTokenResult rotatedTokens;
+        await using (var rotCtx = CreateDbContext())
+        {
+            var rotSut = CreateAuthenticationService(rotCtx);
+            var rotRes = await rotSut.RefreshTokenAsync(initialTokens.RefreshToken);
+            Assert.True(rotRes.IsSuccess);
+            rotatedTokens = rotRes.Tokens!;
+        }
+
+        // 2. User logs out: session is revoked with UserLogout
+        await using (var logoutCtx = CreateDbContext())
+        {
+            var logoutSut = CreateAuthenticationService(logoutCtx);
+            var logoutRes = await logoutSut.LogoutAsync(initialTokens.SessionId, userId);
+            Assert.True(logoutRes.IsSuccess);
+        }
+
+        // 3. Attacker replays initialTokens.RefreshToken against the ALREADY REVOKED session
+        await using (var replayCtx = CreateDbContext())
+        {
+            var replaySut = CreateAuthenticationService(replayCtx);
+            var replayResult = await replaySut.RefreshTokenAsync(initialTokens.RefreshToken, "10.99.99.99");
+
+            Assert.False(replayResult.IsSuccess);
+            Assert.True(replayResult.IsReplayDetected);
+        }
+
+        // 4. Verify session STILL has UserLogout as reason (not overwritten) AND replay audit event is committed
+        await using (var verifyFinalCtx = CreateDbContext())
+        {
+            var session = await verifyFinalCtx.UserSessions.SingleAsync(s => s.Id == initialTokens.SessionId);
+            Assert.True(session.IsRevoked);
+            Assert.Equal(SessionRevocationReason.UserLogout, session.RevocationReason);
+
+            var replayAudit = await verifyFinalCtx.SecurityAuditEvents
+                .SingleOrDefaultAsync(e => e.EventType == SecurityAuditEventType.TokenReplayDetected && e.SessionId == session.Id);
+            Assert.NotNull(replayAudit);
+            Assert.Equal("10.99.99.99", replayAudit.ClientIp);
+            Assert.Equal(SecurityAuditMetadata.Actions.SessionRevoked, replayAudit.ActionTaken);
+        }
+    }
+
+    [Fact]
+    public async Task LogoutAsync_ConcurrentLogoutForSameSession_IsSafeIdempotentAndConsistent()
+    {
+        var email = "concurrent-logout@example.com";
+        var password = "SecurePassword123!";
+
+        await using (var regCtx = CreateDbContext())
+        {
+            var regSut = CreateAuthenticationService(regCtx);
+            await regSut.RegisterAsync(email, password);
+        }
+
+        AuthTokenResult tokens;
+        Guid userId;
+        await using (var loginCtx = CreateDbContext())
+        {
+            var loginSut = CreateAuthenticationService(loginCtx);
+            var loginRes = await loginSut.LoginAsync(email, password);
+            tokens = loginRes.Tokens!;
+            var user = await loginCtx.Users.SingleAsync(u => u.Email == email);
+            userId = user.Id;
+        }
+
+        // Launch 3 concurrent logouts for the same session
+        var tasks = Enumerable.Range(1, 3).Select(async i =>
+        {
+            await using var ctx = CreateDbContext();
+            var sut = CreateAuthenticationService(ctx);
+            return await sut.LogoutAsync(tokens.SessionId, userId, $"192.168.1.{i}");
+        }).ToList();
+
+        var results = await Task.WhenAll(tasks);
+
+        Assert.All(results, r => Assert.True(r.IsSuccess));
+
+        await using var verifyContext = CreateDbContext();
+        var session = await verifyContext.UserSessions.SingleAsync(s => s.Id == tokens.SessionId);
+        Assert.True(session.IsRevoked);
+        Assert.Equal(SessionRevocationReason.UserLogout, session.RevocationReason);
+
+        var activeTokens = await verifyContext.RefreshTokens
+            .Where(t => t.SessionId == session.Id && t.RevokedAtUtc == null)
+            .ToListAsync();
+        Assert.Empty(activeTokens);
+    }
+
+    private sealed class RehashTriggeringPasswordSecurityService : IPasswordSecurityService
+    {
+        private readonly IPasswordSecurityService _inner;
+        public RehashTriggeringPasswordSecurityService(IPasswordSecurityService inner) => _inner = inner;
+
+        public string DummyHash => _inner.DummyHash;
+
+        public string HashPassword(User user, string password) => _inner.HashPassword(user, password);
+        public PasswordVerificationResult VerifyHashedPassword(User user, string hashedPassword, string providedPassword)
+            => PasswordVerificationResult.SuccessRehashNeeded;
+        public bool NeedsRehash(PasswordVerificationResult result) => true;
+        public void VerifyDummyPassword(string providedPassword) => _inner.VerifyDummyPassword(providedPassword);
+    }
+
+    private sealed class InterceptingRehashPasswordSecurityService : IPasswordSecurityService
+    {
+        private readonly IPasswordSecurityService _inner;
+        private readonly Func<Task> _onPrecomputeRehash;
+
+        public InterceptingRehashPasswordSecurityService(IPasswordSecurityService inner, Func<Task> onPrecomputeRehash)
+        {
+            _inner = inner;
+            _onPrecomputeRehash = onPrecomputeRehash;
+        }
+
+        public string DummyHash => _inner.DummyHash;
+
+        public string HashPassword(User user, string password)
+        {
+            _onPrecomputeRehash().GetAwaiter().GetResult();
+            return _inner.HashPassword(user, password);
+        }
+
+        public PasswordVerificationResult VerifyHashedPassword(User user, string hashedPassword, string providedPassword)
+            => PasswordVerificationResult.SuccessRehashNeeded;
+        public bool NeedsRehash(PasswordVerificationResult result) => true;
+        public void VerifyDummyPassword(string providedPassword) => _inner.VerifyDummyPassword(providedPassword);
+    }
 }

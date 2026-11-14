@@ -2,7 +2,7 @@
 
 ## 1. Feature Metadata
 - **Task ID**: FEAT-002 (T5)
-- **Task Name**: Authentication Application Services Implementation
+- **Task Name**: Authentication Application Services Implementation & Remediation
 - **Branch**: `feat/002-auth-application-services`
 - **Base Commit**: `e987fcbc4c8eb27bf03651b40b8e06a6512fc2c2` (PR #16 merged)
 - **Target Framework**: .NET 10 (`net10.0`)
@@ -22,13 +22,14 @@ The Authentication Application Services layer orchestrates all core authenticati
      $$\text{User} \longrightarrow \text{UserSession} \longrightarrow \text{RefreshToken}$$
    - When revoking multiple active sessions (e.g., during password change or reset), session row locks are deterministically ordered by primary key (`ORDER BY id FOR UPDATE`) to guarantee zero inter-transaction deadlock risk.
 
-2. **Timing-Attack Mitigations**:
+2. **Timing-Attack Mitigations & Out-of-Lock Cryptography**:
    - **Registration**: PBKDF2 password hashing executes *before* querying candidate email existence. Both new user registrations and duplicate registration attempts incur identical computational latency, eliminating account enumeration via timing discrepancies.
-   - **Login**: Credential verification employs a two-phase pipeline:
+   - **Login**: Credential verification employs a strict two-phase pipeline:
      1. Asynchronous read-only snapshot query against `platform.users` (non-locking).
      2. Out-of-lock PBKDF2 password verification (`IPasswordSecurityService.VerifyHashedPassword`), guaranteeing slow cryptographic operations never hold exclusive PostgreSQL row locks.
      3. Nonexistent users and locked-out accounts execute dummy PBKDF2 verification (`IPasswordSecurityService.VerifyDummyPassword`) to present identical computational latency.
-     4. PostgreSQL row locks are acquired only after password verification for failure counter incrementation or session/token issuance.
+     4. **Out-of-Lock Rehash Precomputation**: When `NeedsRehash(verification)` is true, the replacement password hash is computed *before* acquiring the user row lock and *before* opening the success transaction. Inside the lock, the rehash is applied only after revalidating that the user status, version token, security stamp, password hash, and lockout state match the snapshot. Transparent rehash updates the password hash without rotating the security stamp.
+     5. PostgreSQL row locks are acquired only after password verification and rehash computation have completed.
 
 3. **Single-Flight Refresh Token Rotation & Critical Replay Precedence**:
    - Active refresh tokens are single-use; rotation atomically revokes the current token, issues a successor child token, updates `UserSession.LastUsedAtUtc`, and generates a fresh JWT access token.
@@ -43,7 +44,7 @@ The Authentication Application Services layer orchestrates all core authenticati
 4. **Security Audit Durability & Zero PII Leakage**:
    - Security audit events (`platform.security_audit_events`) are committed within the same database transaction as the authentication mutation.
    - Audit foreign keys use `ON DELETE SET NULL` for user and session references, ensuring audit history remains durable and queryable even if user entities are purged.
-   - All audit records utilize structured metadata (`SecurityAuditMetadata`) with allow-listed reasons and actions (`permit`, `deny`, `session_created`, `session_revoked`, `token_rotated`, `lockout_applied`).
+   - All audit records utilize structured metadata (`SecurityAuditMetadata`) with allow-listed reasons and actions (`permit`, `deny`, `session_created`, `session_revoked`, `token_rotated`, `lockout_applied`, `security_stamp_rotated`).
    - Plaintext passwords, password hashes, raw tokens, token hashes, and unverified candidate emails are strictly excluded from audit records, log statements, and exception messages.
    - Result records (`AuthTokenResult`, `LoginResult`, `RefreshTokenResult`) implement custom `ToString()` methods that explicitly redact raw tokens.
 
@@ -61,8 +62,8 @@ The Authentication Application Services layer orchestrates all core authenticati
 - Non-locking snapshot check of user record.
 - Nonexistent users execute dummy PBKDF2 verification and return `InvalidCredentials`.
 - Out-of-lock PBKDF2 password verification.
-- **On Failure**: Acquires user row lock, evaluates rolling 15-minute failure window, increments failure count, enforces 15-minute lockout upon 5 consecutive failures, records `UserLoginFailed` or `AccountLockedOut` audit event.
-- **On Success**: Acquires user row lock, verifies snapshot version hasn't mutated concurrently, resets failed login counters, performs transparent rehash if PBKDF2 parameters evolved (without rotating security stamp), creates `UserSession`, creates `RefreshToken`, issues signed JWT access token, records `LoginSuccess` audit event.
+- **On Failure**: Acquires user row lock, evaluates active status and unchanged password hash, increments failure count, enforces 15-minute lockout upon 5 consecutive failures, records `LoginFailed` or `AccountLockedOut` audit event.
+- **On Success**: Computes rehash outside lock if required. Acquires user row lock, verifies snapshot version, status, stamp, and hash haven't mutated concurrently. Resets failed login counters, applies precomputed rehash if needed (without rotating security stamp), creates `UserSession`, creates `RefreshToken`, issues signed JWT access token, records `LoginSuccess` audit event.
 
 ### C. Refresh Token Rotation (`RefreshTokenAsync`)
 - Validates raw refresh token and computes SHA-256 hash.
@@ -80,6 +81,7 @@ The Authentication Application Services layer orchestrates all core authenticati
 ### E. Password Mutation (`ChangePasswordAsync` & `AuthorizedResetPasswordAsync`)
 - Validates new password length (12–128 characters).
 - Out-of-lock verification of current credentials (`ChangePasswordAsync`).
+- Out-of-lock hashing of new password.
 - Acquires user row lock, revalidates version concurrency.
 - Updates password hash, updates password version, rotates security stamp (`User.UpdatePassword`).
 - Acquires deterministic row locks (`ORDER BY id FOR UPDATE`) on all active user sessions and revokes them with reason `PasswordChanged`.
@@ -89,36 +91,47 @@ The Authentication Application Services layer orchestrates all core authenticati
 
 ---
 
-## 4. Test Evidence Summary
+## 4. Architectural Boundaries: Authorization & Rate Limiting
 
-### Unit Tests
-- **Test Project**: `tests/unit/MaintenX.UnitTests.csproj`
-- **Total Tests**: 349 passed, 0 failed, 0 skipped.
-- **Coverage**:
-  - `PasswordValidation` constraint enforcement (min 12, max 128, empty/whitespace rejection, non-disclosure).
-  - Diagnostic string redaction in result models (`AuthTokenResult`, `LoginResult`, `RefreshTokenResult`).
-  - Pre-persistence parameter validation across all application service endpoints.
-  - Dependency injection registration and scoped lifetime validation for `IAuthenticationService`.
+1. **Administrative Reset Authorization Boundary**:
+   - `AuthorizedResetPasswordAsync` is an internal application service method designed for administrative or authorized recovery operations.
+   - It validates domain invariants and prevents resetting deactivated accounts, but does *not* inspect HTTP caller context or claims principal identity.
+   - **T6 Obligation**: Upstream callers (T6 HTTP API controllers) MUST enforce administrative authorization (e.g. `[Authorize(Roles = "Admin")]`) or verified recovery token validation prior to calling this method.
 
-### PostgreSQL Integration Tests
-- **Test Project**: `tests/integration/MaintenX.IntegrationTests.csproj`
-- **Total Tests**: 112 passed, 0 failed, 0 skipped (including 13 dedicated `AuthenticationServiceIntegrationTests`).
-- **PostgreSQL Target**: Real PostgreSQL 16 Alpine container on `maintenx-network`.
-- **Scenarios Verified**:
-  1. `RegisterAsync_ValidInputs_CreatesUserAndSecurityAuditEvent`: Complete user persistence and allow audit event.
-  2. `RegisterAsync_DuplicateEmail_ReturnsGenericResponseAndAuditsDenyWithoutEnumeration`: Uniform response on duplicate registration, deny audit logged without leaking email.
-  3. `LoginAsync_ValidCredentials_IssuesJwtWithRequiredClaimsAndResetsFailedAttempts`: JWT claims (`kid`, `sub`, `sid`, `sst`), session creation, token creation, login success audit event.
-  4. `LoginAsync_InvalidPassword_IncrementsFailedAttemptsAndAuditsFailure`: Failed login counter increment and deny audit.
-  5. `LoginAsync_FiveFailedAttempts_EnforcesFifteenMinuteLockout`: 5 failures enforce lockout, subsequent attempts during lockout rejected with lockout duration.
-  6. `LoginAsync_NonexistentUser_ExecutesDummyHashAndReturnsInvalidCredentials`: Dummy verification executed, failure audited with null userId.
-  7. `RefreshTokenAsync_ValidToken_RotatesAtomicallyAndCapsExpiryAtSessionExpiry`: Atomic rotation, lineage update, expiry capped at session boundary.
-  8. `RefreshTokenAsync_TokenReplayDetected_RevokesSessionFamilyAndRecordsAuditEvent`: Replay triggers session family revocation and durable replay audit event.
-  9. `RefreshTokenAsync_ConcurrentRotation_OneSucceedsAndSecondDetectsReplay`: Two concurrent refresh requests race on row locks; first rotates, second immediately detects replay.
-  10. `LogoutAsync_ValidSession_RevokesSessionAndActiveRefreshTokensIdempotently`: Idempotent session and child token revocation.
-  11. `LogoutAsync_CallerMismatch_ReturnsFailure`: Session ownership verification failure.
-  12. `ChangePasswordAsync_ValidCredentials_RotatesSecurityStampAndRevokesAllSessions`: Security stamp rotation, deterministic session family revocation, old password invalidated, new password accepted.
-  13. `AuthorizedResetPasswordAsync_RotatesSecurityStampAndRevokesAllSessions`: Administrative reset rotates security stamp and revokes all active sessions.
+2. **Rate Limiting Boundary**:
+   - Memory-bounded rate limiting policies (`Auth.Registration`, `Auth.Login`, `Auth.Refresh`) are registered into the service collection in `SecurityServiceExtensions.cs` and run as ASP.NET Core middleware (`app.UseRateLimiter()`).
+   - Rate limiting is an HTTP transport concern; the application service `IAuthenticationService` does not enforce IP rate limits directly.
+   - **T6 Obligation**: Protection against brute-force traffic requires T6 endpoint mappings to attach `.RequireRateLimiting(...)` policies to the respective HTTP routes.
 
-### Security & Vulnerability Audit
-- **Command**: `dotnet list MaintenX.sln package --vulnerable --include-transitive`
-- **Result**: Zero vulnerable packages identified across `MaintenX.Api`, `MaintenX.Worker`, `MaintenX.UnitTests`, and `MaintenX.IntegrationTests`.
+---
+
+## 5. Test Evidence & Coverage Matrix
+
+### Test Execution Summary
+- **Unit Tests**: **349 passed, 0 failed, 0 skipped** (`tests/unit/MaintenX.UnitTests.csproj`).
+- **PostgreSQL Integration Tests**: **118 passed, 0 failed, 0 skipped** (`tests/integration/MaintenX.IntegrationTests.csproj`, running against real PostgreSQL 16 Alpine container).
+- **Vulnerability Audit**: **0 vulnerable packages** across all solution projects.
+
+### Detailed Test Classification
+
+| Invariant / Requirement | Test Method | Test Category | Target Invariant Verified |
+|---|---|---|---|
+| Concurrent registration race | `RegisterAsync_ConcurrentRegistrationForSameEmail_ResultsInExactlyOneUserAndGenericResponses` | **Genuine Concurrency** | Simultaneous `Task.WhenAll` calls with identical normalized email; exactly 1 user created, generic responses, 0 unhandled exceptions. |
+| Concurrent failed logins | `LoginAsync_ConcurrentFailedLogins_EnforcesLockoutWithoutLostUpdates` | **Genuine Concurrency** | Simultaneous `Task.WhenAll` failed logins; row locks serialize updates, zero lost updates, 15-minute lockout enforced. |
+| Concurrent session logout | `LogoutAsync_ConcurrentLogoutForSameSession_IsSafeIdempotentAndConsistent` | **Genuine Concurrency** | Simultaneous `Task.WhenAll` logouts for same session; idempotent success, session revoked with `UserLogout`, all tokens revoked. |
+| Concurrent refresh rotation race | `RefreshTokenAsync_ConcurrentRotation_OneSucceedsAndSecondDetectsReplay` | **Genuine Concurrency** | Simultaneous `Task.WhenAll` refresh calls; exactly 1 succeeds, exactly 1 detects replay and revokes session. |
+| Replay on already-revoked session | `RefreshTokenAsync_ReplayOnAlreadyRevokedSession_PreservesOriginalReasonAndPersistsReplayAudit` | Sequential Integration | Rotated token replayed against logged-out session; detects replay, preserves `UserLogout` reason, commits replay audit event. |
+| Transparent rehash without stamp rotation | `LoginAsync_WhenRehashNeeded_UpdatesPasswordHashWithoutRotatingSecurityStamp` | Sequential Integration | Rehash computes outside lock, updates password hash and version, preserves security stamp, issues valid tokens. |
+| Stale snapshot rehash abortion | `LoginAsync_WhenRehashNeeded_StaleSnapshotAbortsAndDoesNotApplyRehash` | Sequential Integration | Intervening password mutation makes snapshot stale; login aborts, rehash discarded, tokens not issued. |
+| Normal login without rehash | `LoginAsync_ValidCredentials_IssuesJwtWithRequiredClaimsAndResetsFailedAttempts` | Sequential Integration | Standard login issues tokens with claims (`kid`, `sub`, `sid`, `sst`), resets failed attempts, commits audit. |
+| Lockout enforcement | `LoginAsync_FiveFailedAttempts_EnforcesFifteenMinuteLockout` | Sequential Integration | 5 sequential failures trigger lockout; subsequent attempts during lockout rejected with lockout duration. |
+| Nonexistent user dummy timing | `LoginAsync_NonexistentUser_ExecutesDummyHashAndReturnsInvalidCredentials` | Sequential Integration | Nonexistent user executes dummy PBKDF2 hash, audits failure with null userId. |
+| Duplicate registration response | `RegisterAsync_DuplicateEmail_ReturnsGenericResponseAndAuditsDenyWithoutEnumeration` | Sequential Integration | Duplicate email returns identical generic response, audits deny without disclosing email existence. |
+| Refresh token expiry capping | `RefreshTokenAsync_ValidToken_RotatesAtomicallyAndCapsExpiryAtSessionExpiry` | Sequential Integration | New refresh token expiry never exceeds parent session absolute expiry. |
+| Multi-session password change | `ChangePasswordAsync_ValidCredentials_RotatesSecurityStampAndRevokesAllSessions` | Sequential Integration | Deterministic session locking (`ORDER BY id FOR UPDATE`), rotates security stamp, revokes all active sessions. |
+| Administrative password reset | `AuthorizedResetPasswordAsync_RotatesSecurityStampAndRevokesAllSessions` | Sequential Integration | Resets password, rotates security stamp, revokes all sessions, commits `AdminAction` audit. |
+| Logout caller ownership mismatch | `LogoutAsync_CallerMismatch_ReturnsFailure` | Sequential Integration | Rejects logout when caller userId does not match session owner. |
+| Audit durability after user deletion | `SecurityAuditEvents_PersistWithSetNull_WhenUserAndSessionDeleted` | Sequential Integration | Foreign keys use `ON DELETE SET NULL`; audit records survive user and session deletion. |
+| Diagnostic token redaction | `SensitiveModels_RedactRawTokensInToString` | Unit | `ToString()` on `AuthTokenResult`, `LoginResult`, `RefreshTokenResult` redacts raw tokens. |
+| Password length validation | `PasswordValidation_RejectsPasswordsShorterThan12Characters` | Unit | Enforces 12–128 character bounds; exceptions do not disclose input characters. |
+| Scoped DI registration | `AddMaintenXSecurity_RegistersAuthenticationService_AsScoped` | Unit | Verifies `IAuthenticationService` resolves with `Scoped` lifetime. |

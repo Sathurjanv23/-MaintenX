@@ -85,6 +85,11 @@ public interface IAuthenticationService
     /// <summary>
     /// Authorized password reset executed by a verified administrative or recovery process.
     /// Rotates security stamp, revokes all active sessions, and evicts local cache.
+    /// <para>
+    /// Security Notice: This internal application service method enforces domain invariants and ensures the target user
+    /// is not deactivated, but does not perform caller identity or role verification. Upstream callers (such as T6 HTTP
+    /// API controllers) MUST enforce administrative authorization (e.g. <c>[Authorize(Roles = "Admin")]</c>) prior to invocation.
+    /// </para>
     /// </summary>
     /// <param name="userId">Unique user identifier.</param>
     /// <param name="newPassword">New plaintext password satisfying length invariants.</param>

@@ -199,9 +199,16 @@ public sealed class AuthenticationService : IAuthenticationService
                 return LoginResult.InvalidCredentials();
             }
 
-            // Only apply failure count if state has not concurrently mutated
-            if (lockedUser.Version == snapshot.Version && lockedUser.Status == snapshot.Status)
+            // Only apply failure count if user is active and password has not been changed concurrently
+            if (lockedUser.Status == UserStatus.Active &&
+                string.Equals(lockedUser.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
             {
+                if (lockedUser.IsLockedOut(utcNow))
+                {
+                    await failTx.RollbackAsync(cancellationToken);
+                    return LoginResult.LockedOut(lockedUser.LockoutEndUtc!.Value);
+                }
+
                 lockedUser.RecordFailedLogin(
                     utcNow,
                     maxFailedAttempts: 5,
@@ -255,6 +262,13 @@ public sealed class AuthenticationService : IAuthenticationService
             return LoginResult.InvalidCredentials();
         }
 
+        // Precompute transparent password rehash OUTSIDE the database transaction and row lock
+        string? precomputedRehash = null;
+        if (_passwordSecurityService.NeedsRehash(verification))
+        {
+            precomputedRehash = _passwordSecurityService.HashPassword(new User(), password);
+        }
+
         // 6. Verification Succeeded Workflow
         await using var successTx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
@@ -265,9 +279,10 @@ public sealed class AuthenticationService : IAuthenticationService
             return LoginResult.InvalidCredentials();
         }
 
-        // Revalidate snapshot inside row lock to prevent stale credentials from overriding concurrent updates
+        // Revalidate snapshot inside row lock to prevent stale credentials or concurrent mutations from applying rehash or issuing tokens
         if (user.Status != UserStatus.Active ||
             user.IsLockedOut(utcNow) ||
+            user.Version != snapshot.Version ||
             !string.Equals(user.SecurityStamp, snapshot.SecurityStamp, StringComparison.Ordinal) ||
             !string.Equals(user.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
         {
@@ -278,11 +293,10 @@ public sealed class AuthenticationService : IAuthenticationService
         // Reset failed login state
         user.RecordSuccessfulLogin(utcNow);
 
-        // Transparent password rehash if algorithm parameters were upgraded
-        if (_passwordSecurityService.NeedsRehash(verification))
+        // Apply precomputed transparent rehash if required (preserves existing security stamp)
+        if (!string.IsNullOrWhiteSpace(precomputedRehash))
         {
-            var replacementHash = _passwordSecurityService.HashPassword(user, password);
-            user.RehashPassword(replacementHash, utcNow);
+            user.RehashPassword(precomputedRehash, utcNow);
         }
 
         // Create 30-day absolute session
@@ -607,6 +621,10 @@ public sealed class AuthenticationService : IAuthenticationService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Enforces domain invariants and ensures target user is not deactivated.
+    /// Caller authorization (e.g. <c>[Authorize(Roles = "Admin")]</c>) must be strictly enforced at the T6 API controller boundary.
+    /// </remarks>
     public async Task<PasswordMutationResult> AuthorizedResetPasswordAsync(
         Guid userId,
         string newPassword,
