@@ -335,6 +335,42 @@ public class UserTests
     }
 
     [Fact]
+    public void RehashPassword_UpdatesPasswordHash_WithoutRotatingSecurityStamp()
+    {
+        var t0 = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Active, t0);
+        var originalStamp = user.SecurityStamp;
+        var originalVersion = user.Version;
+
+        var newHash = "$argon2id$v=19$rehashedpassword123";
+        var tRehash = t0.AddMinutes(5);
+        user.RehashPassword(newHash, tRehash);
+
+        Assert.Equal(newHash, user.PasswordHash);
+        // Security stamp must NOT rotate on transparent rehash!
+        Assert.Equal(originalStamp, user.SecurityStamp);
+        Assert.Equal(originalVersion + 1, user.Version);
+        Assert.Equal(tRehash, user.UpdatedAtUtc);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void RehashPassword_WithInvalidHash_ThrowsArgumentException(string? invalidHash)
+    {
+        var user = User.Create(ValidEmail, ValidPasswordHash);
+        Assert.ThrowsAny<ArgumentException>(() => user.RehashPassword(invalidHash!, DateTime.UtcNow));
+    }
+
+    [Fact]
+    public void RehashPassword_WhenSuspended_ThrowsInvalidOperationException()
+    {
+        var user = User.Create(ValidEmail, ValidPasswordHash, UserStatus.Suspended);
+        Assert.Throws<InvalidOperationException>(() => user.RehashPassword("newrehash", DateTime.UtcNow));
+    }
+
+    [Fact]
     public void RotateSecurityStamp_GeneratesNewDistinctStampAndBumpsVersion()
     {
         var now = DateTime.UtcNow;
