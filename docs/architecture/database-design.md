@@ -150,9 +150,10 @@ MaintenX implements an optimistic concurrency strategy using an explicit `versio
 
 - **No Secrets in Source Control**: Connection strings are omitted from shared base `appsettings.json`. Values are resolved strictly from environment variables (`ConnectionStrings__DefaultConnection`) or .NET User Secrets (`dotnet user-secrets set "ConnectionStrings:DefaultConnection" "..."`).
 - **Fail-Fast Configuration**: `MaintenXDesignTimeDbContextFactory` and `DatabaseServiceExtensions` strictly throw an `InvalidOperationException` if a connection string is absent, removing all hardcoded credential fallbacks.
-- **Genuine Role Separation**:
+- **Genuine Role Separation & Secure Container Initialization**:
   - **Cluster Administrator (`postgres`)**: Holds `SUPERUSER` and `CREATEDB` privileges, used exclusively via `ConnectionStrings:AdminConnection` to provision and drop isolated databases.
   - **Application Role (`maintenx_app`)**: Restricted role with `NOSUPERUSER`, `NOCREATEDB`, and `NOCREATEROLE`. When an isolated database is provisioned, ownership is assigned to `maintenx_app` (`CREATE DATABASE ... OWNER "maintenx_app"`). Migrations and data operations execute under this restricted role.
+  - **Secure Initialization Script (`01-init-roles.sh`)**: Executable script executed by the official PostgreSQL entrypoint on fresh volumes. Validates `POSTGRES_APP_USER` and `POSTGRES_APP_DB` against `^[a-zA-Z_][a-zA-Z0-9_]{0,62}$` before executing SQL, passes credentials safely via psql's `\getenv` and `format(%I, %L)`, completely avoids string interpolation in SQL heredocs, and never logs passwords.
 - **Sanitized Driver Exception Testing**: Integration test `DB012` verifies that low-level ADO.NET / Npgsql driver exceptions do not reflect or format plaintext credentials in message payloads.
 - **Sanitized Public API Response Testing**: Integration test `DB013` executes against `/health/ready` under simulated database failure to prove that public HTTP Problem Details and Health JSON payloads contain zero connection strings, credentials, hostnames, ports, or internal exception stack traces.
 

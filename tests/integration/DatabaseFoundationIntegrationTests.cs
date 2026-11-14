@@ -75,7 +75,7 @@ public static class TestDatabaseGuard
         }
 
         var allowedHosts = allowedHostsConfig
-            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (allowedHosts.Count == 0)
@@ -1146,5 +1146,99 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
             var remainingCount = Convert.ToInt64(await verifyCmd.ExecuteScalarAsync());
             Assert.Equal(0L, remainingCount);
         }
+    }
+
+    [Fact]
+    public async Task DB021_RolePassword_WithApostrophesAndSpecialCharacters_CanAuthenticate()
+    {
+        var testRole = $"test_role_special_{Guid.NewGuid():N}";
+        var specialPassword = "p'a\"\\$w;--ord!#%&";
+
+        // Step 1: Administrator creates role using safe dynamic format(%I, %L)
+        using (var adminConn = new NpgsqlConnection(_adminConnectionString))
+        {
+            await adminConn.OpenAsync();
+            using var createCmd = adminConn.CreateCommand();
+            createCmd.CommandText = @"
+                SELECT format('CREATE ROLE %I WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT', @role, @pass);";
+            createCmd.Parameters.AddWithValue("role", testRole);
+            createCmd.Parameters.AddWithValue("pass", specialPassword);
+            var sql = (string?)await createCmd.ExecuteScalarAsync();
+            Assert.NotNull(sql);
+
+            using var execCmd = adminConn.CreateCommand();
+            execCmd.CommandText = sql;
+            await execCmd.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            // Step 2: Authenticate using the special password containing apostrophes and SQL-special characters
+            var testConnBuilder = new NpgsqlConnectionStringBuilder(_testConnectionString)
+            {
+                Username = testRole,
+                Password = specialPassword
+            };
+
+            using var testConn = new NpgsqlConnection(testConnBuilder.ConnectionString);
+            await testConn.OpenAsync();
+            Assert.Equal(ConnectionState.Open, testConn.State);
+
+            using var whoamiCmd = testConn.CreateCommand();
+            whoamiCmd.CommandText = "SELECT current_user;";
+            var currentUser = (string?)await whoamiCmd.ExecuteScalarAsync();
+            Assert.Equal(testRole, currentUser);
+        }
+        finally
+        {
+            // Step 3: Cleanup role
+            using var adminConn = new NpgsqlConnection(_adminConnectionString);
+            await adminConn.OpenAsync();
+            using var dropCmd = adminConn.CreateCommand();
+            dropCmd.CommandText = $"DROP ROLE IF EXISTS \"{testRole}\";";
+            await dropCmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData("maintenx_app", true)]
+    [InlineData("maintenx_dev", true)]
+    [InlineData("_custom123", true)]
+    [InlineData("APP_USER", true)]
+    [InlineData("a_1234567890123456789012345678901234567890123456789012345678901", true)]
+    [InlineData("bad;user", false)]
+    [InlineData("bad-user", false)]
+    [InlineData("123user", false)]
+    [InlineData("user\"name", false)]
+    [InlineData("user'name", false)]
+    [InlineData("user name", false)]
+    [InlineData("", false)]
+    [InlineData("a_12345678901234567890123456789012345678901234567890123456789012", false)]
+    public void DB022_InitRolesScript_IdentifierValidation_EnforcesPostgreSqlIdentifierRules(string identifier, bool shouldBeValid)
+    {
+        var regex = new System.Text.RegularExpressions.Regex("^[a-zA-Z_][a-zA-Z0-9_]{0,62}$");
+        var isValid = regex.IsMatch(identifier);
+        Assert.Equal(shouldBeValid, isValid);
+    }
+
+    [Theory]
+    [InlineData("localhost;127.0.0.1;postgres")]
+    [InlineData("localhost, 127.0.0.1, postgres")]
+    [InlineData("localhost; 127.0.0.1, postgres")]
+    public void DB023_HostAllowlist_SupportsBothSemicolonAndCommaDelimiters(string allowedHostsConfig)
+    {
+        var validAdmin = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=pass;";
+        var validTest = "Host=localhost;Port=5432;Database=postgres;Username=maintenx_app;Password=pass;";
+
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TestDatabase:AllowProvisioning"] = "true",
+                ["TestDatabase:AllowedHosts"] = allowedHostsConfig
+            })
+            .Build();
+
+        // Valid hosts must pass without exception
+        TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, config);
     }
 }

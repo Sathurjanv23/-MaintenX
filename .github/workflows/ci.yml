@@ -31,6 +31,12 @@ jobs:
       - name: Validate Docker Compose Configuration
         run: docker compose config
 
+      - name: Test PostgreSQL Initialization Script
+        run: |
+          chmod +x infra/docker/init-db/01-init-roles.sh
+          chmod +x infra/docker/test-init-script.sh
+          ./infra/docker/test-init-script.sh
+
   backend-ci:
     name: Backend Build & Tests (.NET 10)
     runs-on: ubuntu-latest

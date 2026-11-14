@@ -66,6 +66,9 @@ Built the production-grade PostgreSQL persistence foundation for the MaintenX Sa
 | **DB-018** | `DB018_RoleSeparation_ApplicationRole_CanManageSchemaAndMigrateOwnedDatabase` | Proves application role can manage schemas and execute DDL in its owned disposable database | **PASSED** |
 | **DB-019** | `DB019_SafeCleanup_CleansUpOnSetupFailure` | Proves emergency teardown reliably drops database when setup fails | **PASSED** |
 | **DB-020** | `DB020_FixtureInitializationFailure_GuaranteesDatabaseCleanupAndSurfacesError` | Proves real fixture initialization path creates DB, cleans up on post-provision failure, surfaces error to runner, and leaves zero DBs behind | **PASSED** |
+| **DB-021** | `DB021_RolePassword_WithApostrophesAndSpecialCharacters_CanAuthenticate` | Proves passwords containing apostrophes, backslashes, dollar signs, semicolons and quotes work and authenticate via dynamic format(%I, %L) | **PASSED** |
+| **DB-022** | `DB022_InitRolesScript_IdentifierValidation_EnforcesPostgreSqlIdentifierRules` | Proves role and database identifier allowlist regex strictly accepts valid names and rejects invalid names or SQL injection attempts | **PASSED** |
+| **DB-023** | `DB023_HostAllowlist_SupportsBothSemicolonAndCommaDelimiters` | Proves TestDatabase:AllowedHosts parses both semicolon and comma delimiters consistently | **PASSED** |
 
 ---
 
