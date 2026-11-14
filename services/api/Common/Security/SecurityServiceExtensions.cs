@@ -103,7 +103,10 @@ public static class SecurityServiceExtensions
         services.AddAuthorization();
 
         // 5. Memory-Bounded Rate Limiting Infrastructure
-        services.Configure<RateLimitingOptions>(configuration.GetSection(RateLimitingOptions.SectionName));
+        services.AddSingleton<IValidateOptions<RateLimitingOptions>, RateLimitingOptionsValidator>();
+        services.AddOptions<RateLimitingOptions>()
+            .Bind(configuration.GetSection(RateLimitingOptions.SectionName))
+            .ValidateOnStart();
 
         services.AddSingleton<AuthRateLimitManagers>();
 

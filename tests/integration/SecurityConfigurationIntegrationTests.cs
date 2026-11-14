@@ -433,6 +433,57 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
         Assert.Contains("Insufficient key entropy", ex.Message);
     }
 
+    [Theory]
+    [InlineData("0")]
+    [InlineData("12")]
+    [InlineData("23")]
+    [InlineData("48")]
+    public void Startup_WhenRetiredKeyRetentionHoursNot24_ThrowsValidationException(string hours)
+    {
+        var factory = _baseFactory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
+            builder.UseSetting("Jwt:Issuer", TestIssuer);
+            builder.UseSetting("Jwt:Audience", TestAudience);
+            builder.UseSetting("Jwt:KeyId", ActiveKeyId);
+            builder.UseSetting("Jwt:SigningKey", ActiveSigningKeyBase64);
+            builder.UseSetting("Jwt:RetiredKeyRetentionHours", hours);
+        });
+
+        var ex = Assert.Throws<OptionsValidationException>(() =>
+        {
+            _ = factory.CreateClient();
+        });
+
+        Assert.Contains("retired key retention hours", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("RateLimiting:RegistrationPermitLimit", "0")]
+    [InlineData("RateLimiting:LoginPermitLimit", "-1")]
+    [InlineData("RateLimiting:RefreshPermitLimit", "0")]
+    [InlineData("RateLimiting:WindowSeconds", "0")]
+    [InlineData("RateLimiting:SegmentsPerWindow", "0")]
+    [InlineData("RateLimiting:MaxTrackedPartitions", "0")]
+    [InlineData("RateLimiting:SegmentsPerWindow", "7")]
+    public void Startup_WhenRateLimitingOptionsInvalid_ThrowsValidationException(string settingKey, string settingValue)
+    {
+        var factory = _baseFactory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
+            builder.UseSetting("Jwt:Issuer", TestIssuer);
+            builder.UseSetting("Jwt:Audience", TestAudience);
+            builder.UseSetting("Jwt:KeyId", ActiveKeyId);
+            builder.UseSetting("Jwt:SigningKey", ActiveSigningKeyBase64);
+            builder.UseSetting(settingKey, settingValue);
+        });
+
+        Assert.Throws<OptionsValidationException>(() =>
+        {
+            _ = factory.CreateClient();
+        });
+    }
+
     [Fact]
     public async Task DevelopmentStartup_WithDevelopmentSettings_SucceedsWithoutCustomKeyOverrides()
     {

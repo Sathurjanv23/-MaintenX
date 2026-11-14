@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 public sealed class JwtOptionsValidator : IValidateOptions<JwtOptions>
 {
     public const int MinimumKeyLengthBytes = 32; // 256 bits
+    public const int MandatoryRetiredKeyRetentionHours = 24;
 
     public ValidateOptionsResult Validate(string? name, JwtOptions options)
     {
@@ -35,9 +36,9 @@ public sealed class JwtOptionsValidator : IValidateOptions<JwtOptions>
             failures.Add($"Invalid JWT access token lifetime: {options.AccessTokenLifetimeMinutes} minutes. Lifetime must be greater than zero.");
         }
 
-        if (options.RetiredKeyRetentionHours <= 0)
+        if (options.RetiredKeyRetentionHours != MandatoryRetiredKeyRetentionHours)
         {
-            failures.Add($"Invalid JWT retired key retention hours: {options.RetiredKeyRetentionHours}. Must be greater than zero.");
+            failures.Add($"Invalid JWT retired key retention hours: {options.RetiredKeyRetentionHours}. The security architecture strictly mandates a retention period of exactly {MandatoryRetiredKeyRetentionHours} hours.");
         }
 
         if (string.IsNullOrWhiteSpace(options.SigningKey))
