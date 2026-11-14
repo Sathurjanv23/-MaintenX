@@ -67,7 +67,7 @@ Commercial properties, universities, hospitals, and industrial facilities face s
   - Enforced schema segmentation, UUID primary keys, normalized unique slug index (`ix_tenants_slug`), and lifecycle check constraints (`ck_tenants_status`, `ck_tenants_slug`)
   - Established optimistic concurrency control with `version` token and automatic UTC auditing
   - Generated code-first migrations (`20261113000000_InitialDatabaseFoundation`, `20261113000001_HardenTenantSlugConstraints`) and idempotent SQL scripts
-  - Implemented isolated real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-014) executing in dedicated disposable databases (`maintenx_test_*`) protected by strict database safety guards, administrator credential separation, automatic teardown on setup failure, and automated migration upgrade testing (`DB014`)
+  - Implemented isolated real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-019) executing in dedicated disposable databases (`maintenx_test_*`) protected by strict fail-closed safety guards, host allowlisting, explicit provisioning opt-in (`TestDatabase:AllowProvisioning`), genuine administrator (`postgres`) vs. restricted application (`maintenx_app`) role separation, automatic teardown on setup failure, and automated migration upgrade testing (`DB014`)
   - Authored comprehensive [Database Architecture Documentation](docs/architecture/database-design.md) and [ADR-0002](docs/adr/ADR-0002-postgresql-efcore.md)
 
 ### Feature Roadmap *(Clearly Marked as Planned)*
@@ -167,6 +167,7 @@ cp .env.example .env
 ```
 
 ### 2. Start PostgreSQL via Docker Compose
+Docker Compose initializes a cluster with a dedicated superuser (`postgres`) and creates a restricted application role (`maintenx_app` without superuser or createdb privileges) owning the `maintenx_dev` database:
 ```bash
 docker-compose up -d postgres
 ```
@@ -175,7 +176,23 @@ Verify the container is healthy:
 docker-compose ps
 ```
 
-### 3. Run ASP.NET Core Web API
+### 3. Configure Database Credentials (.NET User Secrets or Environment Variables)
+No database credentials or passwords are committed in `appsettings.json`. For local development, set `DefaultConnection` via .NET User Secrets:
+```bash
+cd services/api
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+cd ../..
+```
+Or via environment variables:
+```bash
+# On Linux / macOS:
+export ConnectionStrings__DefaultConnection="Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+
+# On Windows (PowerShell):
+$env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+```
+
+### 4. Run ASP.NET Core Web API
 ```bash
 dotnet run --project services/api/MaintenX.Api.csproj
 ```
@@ -186,7 +203,7 @@ Endpoints:
 - **Readiness Probe**: `http://localhost:5000/health/ready` &rarr; HTTP 200 (DB Online) / HTTP 503 (DB Offline)
 - **API Diagnostics**: `http://localhost:5000/api/v1/info`
 
-### 4. Run Next.js Web Frontend
+### 5. Run Next.js Web Frontend
 ```bash
 cd apps/web
 pnpm install --frozen-lockfile
@@ -194,7 +211,7 @@ pnpm run dev
 ```
 Open [http://localhost:3000](http://localhost:3000) to view the MaintenX dashboard with live backend connectivity indicators.
 
-### 5. Run Flutter Mobile Client *(After Flutter SDK is installed)*
+### 6. Run Flutter Mobile Client *(After Flutter SDK is installed)*
 ```bash
 cd apps/mobile
 flutter pub get
@@ -213,7 +230,14 @@ dotnet build MaintenX.sln
 # Run unit tests
 dotnet test tests/unit/MaintenX.UnitTests.csproj
 
-# Run integration tests (requires PostgreSQL running)
+# Run integration tests against real PostgreSQL using separate administrator & application roles
+# Set environment variables for isolated test provisioning:
+# Windows (PowerShell):
+$env:ConnectionStrings__AdminConnection = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=postgres_local_secret_2026;"
+$env:ConnectionStrings__TestConnection = "Host=localhost;Port=5432;Database=postgres;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+$env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=maintenx_dev_password_change_in_prod;"
+$env:TestDatabase__AllowProvisioning = "true"
+
 dotnet test tests/integration/MaintenX.IntegrationTests.csproj
 ```
 

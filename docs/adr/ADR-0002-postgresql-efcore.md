@@ -65,4 +65,6 @@ MaintenX is a multi-tenant facility maintenance SaaS platform requiring relation
 - Optimistic concurrency must be enforced on mutable root entities using a version token.
 - Tenant slugs must be normalized lowercase strings conforming to `^[a-z0-9]+(-[a-z0-9]+)*$` and enforced via database check constraints (`ck_tenants_slug`).
 - Automated integration tests must run exclusively against isolated disposable databases prefixed with `maintenx_test_` and never against development or production databases.
-- Design-time factories and configuration services must fail fast if connection strings are omitted, with zero hardcoded credential fallbacks in source code.
+- Automated tests must enforce genuine role separation: an administrator role (`AdminConnection`) provisions/drops disposable databases and assigns ownership to a restricted application role (`TestConnection`) which lacks `SUPERUSER` or `CREATEDB`.
+- Test execution must fail closed: requiring explicit opt-in (`TestDatabase:AllowProvisioning=true`) and approved test host allowlisting.
+- Design-time factories and configuration services must fail fast if connection strings are omitted, with zero hardcoded credential fallbacks in source code or committed base configuration files (`appsettings.json`).

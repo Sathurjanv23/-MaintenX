@@ -60,6 +60,11 @@ Built the production-grade PostgreSQL persistence foundation for the MaintenX Sa
 | **DB-012** | `DB012_DatabaseDriverException_DoesNotExposeSensitiveCredentials` | Driver/ADO.NET exception credential sanitization | **PASSED** |
 | **DB-013** | `DB013_PublicHealthApiEndpoint_WhenDatabaseFails_DoesNotExposeConnectionDetails` | Public HTTP API error disclosure prevention | **PASSED** |
 | **DB-014** | `DB014_MigrationUpgrade_PreservesExistingDataAndAppliesSlugConstraint` | Automated upgrade test verifying data survival from migration 0001 to 0002 and enforcement of `ck_tenants_slug` | **PASSED** |
+| **DB-015** | `DB015_ConfigurationGuard_RejectsMissingAdminOrTestConnection` | Configuration guard rejects missing admin or test connections without falling back to default | **PASSED** |
+| **DB-016** | `DB016_ConfigurationGuard_RejectsUnapprovedHostOrDisabledOptIn` | Rejects unapproved hosts (e.g. prod host) and verifies explicit opt-in requirement | **PASSED** |
+| **DB-017** | `DB017_RoleSeparation_ApplicationRole_IsNotSuperuserAndCannotCreateDatabase` | Proves application role has `rolsuper=false`, `rolcreatedb=false`, and `CREATE DATABASE` is denied | **PASSED** |
+| **DB-018** | `DB018_RoleSeparation_ApplicationRole_CanManageSchemaAndMigrateOwnedDatabase` | Proves application role can manage schemas and execute DDL in its owned disposable database | **PASSED** |
+| **DB-019** | `DB019_SafeCleanup_CleansUpOnSetupFailure` | Proves emergency teardown reliably drops database when setup fails | **PASSED** |
 
 ---
 

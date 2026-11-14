@@ -18,6 +18,7 @@ public sealed class MaintenXDesignTimeDbContextFactory : IDesignTimeDbContextFac
             .SetBasePath(basePath)
             .AddJsonFile("appsettings.json", optional: true)
             .AddJsonFile("appsettings.Development.json", optional: true)
+            .AddUserSecrets<MaintenXDesignTimeDbContextFactory>(optional: true)
             .AddEnvironmentVariables()
             .Build();
 
@@ -27,7 +28,7 @@ public sealed class MaintenXDesignTimeDbContextFactory : IDesignTimeDbContextFac
         {
             throw new InvalidOperationException(
                 "Design-time connection string 'DefaultConnection' was not found in configuration or environment variables. " +
-                "Please configure 'ConnectionStrings:DefaultConnection' in appsettings.Development.json or set 'ConnectionStrings__DefaultConnection'.");
+                "Please configure 'ConnectionStrings:DefaultConnection' via .NET User Secrets or set 'ConnectionStrings__DefaultConnection'.");
         }
 
         var optionsBuilder = new DbContextOptionsBuilder<MaintenXDbContext>();

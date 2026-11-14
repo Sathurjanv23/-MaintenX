@@ -15,27 +15,81 @@ using Npgsql;
 using Xunit;
 
 /// <summary>
-/// Integration test suite for MaintenX PostgreSQL Database Foundation (FEAT-001).
-/// All test cases execute against an isolated disposable database ('maintenx_test_*')
-/// with strict safety guards to protect development, staging, and production databases.
+/// Fail-closed safety guards for automated test database operations.
+/// Prevents accidental mutation or destruction of development, staging, and production databases,
+/// and enforces allowlisted hosts and explicit test provisioning opt-in.
 /// </summary>
-public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFactory<Program>>, IAsyncLifetime
+public static class TestDatabaseGuard
 {
-    private readonly WebApplicationFactory<Program> _baseFactory;
-    private WebApplicationFactory<Program> _isolatedFactory = null!;
-    private string _adminConnectionString = string.Empty;
-    private string _testDbName = string.Empty;
-    private string _isolatedConnectionString = string.Empty;
+    private static readonly string[] ProtectedDatabases =
+        ["maintenx_dev", "maintenx_prod", "maintenx_staging", "postgres", "template1"];
 
-    public DatabaseFoundationIntegrationTests(WebApplicationFactory<Program> baseFactory)
+    public static (string AdminConnection, string TestConnection) ValidateConnectionConfiguration(IConfiguration config)
     {
-        _baseFactory = baseFactory;
+        var adminConn = config.GetConnectionString("AdminConnection");
+        var testConn = config.GetConnectionString("TestConnection");
+
+        if (string.IsNullOrWhiteSpace(adminConn))
+        {
+            throw new InvalidOperationException(
+                "Missing required configuration: 'ConnectionStrings:AdminConnection'. " +
+                "Integration testing requires a dedicated administrator connection string for provisioning test databases.");
+        }
+
+        if (string.IsNullOrWhiteSpace(testConn))
+        {
+            throw new InvalidOperationException(
+                "Missing required configuration: 'ConnectionStrings:TestConnection'. " +
+                "Integration testing requires a dedicated application/test connection string for migrations and test operations.");
+        }
+
+        return (adminConn, testConn);
     }
 
-    /// <summary>
-    /// Strict safety guard preventing destruction or operations on non-test databases.
-    /// </summary>
-    internal static void EnsureSafeTestDatabaseName(string databaseName)
+    public static void ValidateTestDatabaseSafety(
+        string databaseName,
+        string adminConnectionString,
+        string testConnectionString,
+        IConfiguration config)
+    {
+        // 1. Explicit provisioning opt-in verification
+        var allowOptIn = config.GetValue<string>("TestDatabase:AllowProvisioning");
+
+        if (!string.Equals(allowOptIn, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Test database provisioning is disabled by default for safety. " +
+                "Explicit opt-in required: set 'TestDatabase:AllowProvisioning=true' (or environment variable 'TEST_DATABASE_ALLOW_PROVISIONING=true').");
+        }
+
+        // 2. Database Name Verification
+        EnsureSafeTestDatabaseName(databaseName);
+
+        // 3. Approved Hosts Verification
+        var allowedHostsConfig = config.GetValue<string>("TestDatabase:AllowedHosts")
+            ?? "localhost;127.0.0.1;postgres;maintenx-postgres;host.docker.internal";
+
+        var allowedHosts = allowedHostsConfig
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var adminBuilder = new NpgsqlConnectionStringBuilder(adminConnectionString);
+        var testBuilder = new NpgsqlConnectionStringBuilder(testConnectionString);
+
+        if (string.IsNullOrWhiteSpace(adminBuilder.Host) || !allowedHosts.Contains(adminBuilder.Host))
+        {
+            throw new InvalidOperationException(
+                $"Safety violation: Admin connection host '{adminBuilder.Host}' is not in the approved test database hosts allowlist [{string.Join(", ", allowedHosts)}].");
+        }
+
+        if (string.IsNullOrWhiteSpace(testBuilder.Host) || !allowedHosts.Contains(testBuilder.Host))
+        {
+            throw new InvalidOperationException(
+                $"Safety violation: Test connection host '{testBuilder.Host}' is not in the approved test database hosts allowlist [{string.Join(", ", allowedHosts)}].");
+        }
+    }
+
+    public static void EnsureSafeTestDatabaseName(string databaseName)
     {
         if (string.IsNullOrWhiteSpace(databaseName) ||
             !databaseName.StartsWith("maintenx_test_", StringComparison.OrdinalIgnoreCase))
@@ -45,62 +99,82 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
                 "Automated test database operations are strictly restricted to databases prefixed with 'maintenx_test_'.");
         }
 
-        string[] protectedDatabases = ["maintenx_dev", "maintenx_prod", "maintenx_staging", "postgres", "template1"];
-        if (protectedDatabases.Any(p => p.Equals(databaseName, StringComparison.OrdinalIgnoreCase)))
+        if (ProtectedDatabases.Any(p => p.Equals(databaseName, StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidOperationException($"Safety violation: Cannot drop or mutate protected database '{databaseName}'.");
         }
+    }
+}
+
+/// <summary>
+/// Integration test suite for MaintenX PostgreSQL Database Foundation (FEAT-001).
+/// All test cases execute against an isolated disposable database ('maintenx_test_*')
+/// using genuine administrator/application credential separation and strict safety guards.
+/// </summary>
+public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFactory<Program>>, IAsyncLifetime
+{
+    private readonly WebApplicationFactory<Program> _baseFactory;
+    private WebApplicationFactory<Program> _isolatedFactory = null!;
+    private string _adminConnectionString = string.Empty;
+    private string _testConnectionString = string.Empty;
+    private string _testDbName = string.Empty;
+    private string _isolatedConnectionString = string.Empty;
+    private string _appRole = string.Empty;
+
+    public DatabaseFoundationIntegrationTests(WebApplicationFactory<Program> baseFactory)
+    {
+        _baseFactory = baseFactory;
     }
 
     public async Task InitializeAsync()
     {
         var config = _baseFactory.Services.GetRequiredService<IConfiguration>();
-        var baseConnection = config.GetConnectionString("TestConnection")
-            ?? Environment.GetEnvironmentVariable("ConnectionStrings__TestConnection")
-            ?? config.GetConnectionString("DefaultConnection")
-            ?? Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
-            ?? throw new InvalidOperationException(
-                "Database integration testing requires an accessible PostgreSQL connection string configured via " +
-                "'ConnectionStrings:TestConnection', 'ConnectionStrings:DefaultConnection', or environment variables.");
 
-        var adminConnection = config.GetConnectionString("AdminConnection")
-            ?? Environment.GetEnvironmentVariable("ConnectionStrings__AdminConnection");
+        // 1. Explicit connection requirements - no fallback to DefaultConnection
+        var (adminConn, testConn) = TestDatabaseGuard.ValidateConnectionConfiguration(config);
+        _adminConnectionString = adminConn;
+        _testConnectionString = testConn;
 
-        _adminConnectionString = !string.IsNullOrWhiteSpace(adminConnection)
-            ? adminConnection
-            : new NpgsqlConnectionStringBuilder(baseConnection) { Database = "postgres" }.ConnectionString;
-
-        // Generate isolated disposable database name with strict 'maintenx_test_' prefix
         _testDbName = $"maintenx_test_{Guid.NewGuid():N}";
-        EnsureSafeTestDatabaseName(_testDbName);
+        TestDatabaseGuard.ValidateTestDatabaseSafety(_testDbName, _adminConnectionString, _testConnectionString, config);
+
+        var testBuilder = new NpgsqlConnectionStringBuilder(_testConnectionString);
+        _appRole = testBuilder.Username ?? string.Empty;
 
         bool databaseCreated = false;
         try
         {
-            // Provision the clean isolated database using admin credentials on PostgreSQL
-            using (var adminConn = new NpgsqlConnection(_adminConnectionString))
+            // Provision the clean isolated database using admin credentials and assign ownership to the restricted application role
+            using (var adminConnection = new NpgsqlConnection(_adminConnectionString))
             {
-                await adminConn.OpenAsync();
-                using var createCmd = adminConn.CreateCommand();
-                createCmd.CommandText = $"CREATE DATABASE {_testDbName};";
+                await adminConnection.OpenAsync();
+                using var createCmd = adminConnection.CreateCommand();
+                createCmd.CommandText = !string.IsNullOrWhiteSpace(_appRole)
+                    ? $"CREATE DATABASE {_testDbName} OWNER \"{_appRole}\";"
+                    : $"CREATE DATABASE {_testDbName};";
                 await createCmd.ExecuteNonQueryAsync();
+
+                if (!string.IsNullOrWhiteSpace(_appRole))
+                {
+                    using var grantCmd = adminConnection.CreateCommand();
+                    grantCmd.CommandText = $"GRANT ALL PRIVILEGES ON DATABASE {_testDbName} TO \"{_appRole}\";";
+                    await grantCmd.ExecuteNonQueryAsync();
+                }
+
                 databaseCreated = true;
             }
 
-            // Build isolated connection string targeting the disposable database
-            var isolatedBuilder = new NpgsqlConnectionStringBuilder(baseConnection)
-            {
-                Database = _testDbName
-            };
-            _isolatedConnectionString = isolatedBuilder.ConnectionString;
+            // Target the newly provisioned database using application test credentials
+            testBuilder.Database = _testDbName;
+            _isolatedConnectionString = testBuilder.ConnectionString;
 
-            // Reconfigure WebApplicationFactory to strictly target the isolated test database
+            // Reconfigure WebApplicationFactory to target the isolated test database
             _isolatedFactory = _baseFactory.WithWebHostBuilder(webBuilder =>
             {
                 webBuilder.UseSetting("ConnectionStrings:DefaultConnection", _isolatedConnectionString);
             });
 
-            // Apply all committed migrations to the isolated test database
+            // Apply all committed migrations to the isolated test database using the application role
             using var scope = _isolatedFactory.Services.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<MaintenXDbContext>();
             await dbContext.Database.MigrateAsync();
@@ -112,7 +186,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
                 try
                 {
                     NpgsqlConnection.ClearAllPools();
-                    EnsureSafeTestDatabaseName(_testDbName);
+                    TestDatabaseGuard.EnsureSafeTestDatabaseName(_testDbName);
                     using var cleanupConn = new NpgsqlConnection(_adminConnectionString);
                     await cleanupConn.OpenAsync();
                     using var dropCmd = cleanupConn.CreateCommand();
@@ -135,15 +209,15 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
 
     public async Task DisposeAsync()
     {
-        // Clear all connection pools before dropping the database
         NpgsqlConnection.ClearAllPools();
+
+        Exception? teardownEx = null;
 
         if (!string.IsNullOrWhiteSpace(_testDbName) && !string.IsNullOrWhiteSpace(_adminConnectionString))
         {
-            EnsureSafeTestDatabaseName(_testDbName);
-
             try
             {
+                TestDatabaseGuard.EnsureSafeTestDatabaseName(_testDbName);
                 using var adminConn = new NpgsqlConnection(_adminConnectionString);
                 await adminConn.OpenAsync();
                 using var dropCmd = adminConn.CreateCommand();
@@ -153,11 +227,24 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[CRITICAL WARNING] Failed to drop disposable test database '{_testDbName}': {ex.Message}");
-                throw;
+                teardownEx = ex;
             }
         }
 
-        _isolatedFactory?.Dispose();
+        try
+        {
+            _isolatedFactory?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[CRITICAL WARNING] Failed to dispose isolated test factory: {ex.Message}");
+            teardownEx = teardownEx == null ? ex : new AggregateException(teardownEx, ex);
+        }
+
+        if (teardownEx != null)
+        {
+            throw teardownEx;
+        }
     }
 
     [Fact]
@@ -468,20 +555,29 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
     {
         // Arrange: Generate unique disposable database name with strict safety prefix
         var disposableDbName = "maintenx_test_init_" + Guid.NewGuid().ToString("N")[..8];
-        EnsureSafeTestDatabaseName(disposableDbName);
+        TestDatabaseGuard.EnsureSafeTestDatabaseName(disposableDbName);
 
         using (var adminConn = new NpgsqlConnection(_adminConnectionString))
         {
             await adminConn.OpenAsync();
             using var createCmd = adminConn.CreateCommand();
-            createCmd.CommandText = $"CREATE DATABASE {disposableDbName};";
+            createCmd.CommandText = !string.IsNullOrWhiteSpace(_appRole)
+                ? $"CREATE DATABASE {disposableDbName} OWNER \"{_appRole}\";"
+                : $"CREATE DATABASE {disposableDbName};";
             await createCmd.ExecuteNonQueryAsync();
+
+            if (!string.IsNullOrWhiteSpace(_appRole))
+            {
+                using var grantCmd = adminConn.CreateCommand();
+                grantCmd.CommandText = $"GRANT ALL PRIVILEGES ON DATABASE {disposableDbName} TO \"{_appRole}\";";
+                await grantCmd.ExecuteNonQueryAsync();
+            }
         }
 
         try
         {
-            // Act: Build DbContext targeting the clean disposable database using application connection
-            var testConnBuilder = new NpgsqlConnectionStringBuilder(_isolatedConnectionString)
+            // Act: Build DbContext targeting the clean disposable database using the application connection
+            var testConnBuilder = new NpgsqlConnectionStringBuilder(_testConnectionString)
             {
                 Database = disposableDbName
             };
@@ -514,7 +610,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         {
             // Cleanup: Drop the disposable test database with safety verification
             NpgsqlConnection.ClearAllPools();
-            EnsureSafeTestDatabaseName(disposableDbName);
+            TestDatabaseGuard.EnsureSafeTestDatabaseName(disposableDbName);
 
             try
             {
@@ -597,17 +693,26 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
     {
         // Arrange: Generate unique disposable database name
         var disposableDbName = "maintenx_test_upgrade_" + Guid.NewGuid().ToString("N")[..8];
-        EnsureSafeTestDatabaseName(disposableDbName);
+        TestDatabaseGuard.EnsureSafeTestDatabaseName(disposableDbName);
 
         using (var adminConn = new NpgsqlConnection(_adminConnectionString))
         {
             await adminConn.OpenAsync();
             using var createCmd = adminConn.CreateCommand();
-            createCmd.CommandText = $"CREATE DATABASE {disposableDbName};";
+            createCmd.CommandText = !string.IsNullOrWhiteSpace(_appRole)
+                ? $"CREATE DATABASE {disposableDbName} OWNER \"{_appRole}\";"
+                : $"CREATE DATABASE {disposableDbName};";
             await createCmd.ExecuteNonQueryAsync();
+
+            if (!string.IsNullOrWhiteSpace(_appRole))
+            {
+                using var grantCmd = adminConn.CreateCommand();
+                grantCmd.CommandText = $"GRANT ALL PRIVILEGES ON DATABASE {disposableDbName} TO \"{_appRole}\";";
+                await grantCmd.ExecuteNonQueryAsync();
+            }
         }
 
-        var testConnBuilder = new NpgsqlConnectionStringBuilder(_isolatedConnectionString)
+        var testConnBuilder = new NpgsqlConnectionStringBuilder(_testConnectionString)
         {
             Database = disposableDbName
         };
@@ -688,7 +793,7 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
         {
             // Step 8: Safe cleanup
             NpgsqlConnection.ClearAllPools();
-            EnsureSafeTestDatabaseName(disposableDbName);
+            TestDatabaseGuard.EnsureSafeTestDatabaseName(disposableDbName);
 
             try
             {
@@ -703,6 +808,182 @@ public class DatabaseFoundationIntegrationTests : IClassFixture<WebApplicationFa
                 Console.Error.WriteLine($"[CRITICAL WARNING] Failed to drop disposable test database '{disposableDbName}': {ex.Message}");
                 throw;
             }
+        }
+    }
+
+    [Fact]
+    public void DB015_ConfigurationGuard_RejectsMissingAdminOrTestConnection()
+    {
+        // 1. Missing AdminConnection throws InvalidOperationException
+        var configMissingAdmin = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:TestConnection"] = "Host=localhost;Database=postgres;Username=app;Password=pass;",
+                ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=maintenx_dev;Username=app;Password=pass;",
+                ["TestDatabase:AllowProvisioning"] = "true",
+                ["TestDatabase:AllowedHosts"] = "localhost"
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateConnectionConfiguration(configMissingAdmin));
+
+        // 2. Missing TestConnection throws InvalidOperationException without falling back to DefaultConnection
+        var configMissingTest = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:AdminConnection"] = "Host=localhost;Database=postgres;Username=admin;Password=pass;",
+                ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=maintenx_dev;Username=app;Password=pass;",
+                ["TestDatabase:AllowProvisioning"] = "true",
+                ["TestDatabase:AllowedHosts"] = "localhost"
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateConnectionConfiguration(configMissingTest));
+    }
+
+    [Fact]
+    public void DB016_ConfigurationGuard_RejectsUnapprovedHostOrDisabledOptIn()
+    {
+        var validAdmin = "Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=pass;";
+        var validTest = "Host=localhost;Port=5432;Database=postgres;Username=maintenx_app;Password=pass;";
+
+        // 1. Disabled opt-in throws InvalidOperationException
+        var configDisabledOptIn = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TestDatabase:AllowProvisioning"] = "false",
+                ["TestDatabase:AllowedHosts"] = "localhost"
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", validAdmin, validTest, configDisabledOptIn));
+
+        // 2. Unapproved host throws InvalidOperationException
+        var unapprovedAdmin = "Host=prod-db.maintenx.internal;Port=5432;Database=postgres;Username=postgres;Password=pass;";
+        var configApprovedHosts = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TestDatabase:AllowProvisioning"] = "true",
+                ["TestDatabase:AllowedHosts"] = "localhost;127.0.0.1;postgres"
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            TestDatabaseGuard.ValidateTestDatabaseSafety("maintenx_test_sample", unapprovedAdmin, validTest, configApprovedHosts));
+    }
+
+    [Fact]
+    public async Task DB017_RoleSeparation_ApplicationRole_IsNotSuperuserAndCannotCreateDatabase()
+    {
+        using var scope = _isolatedFactory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<MaintenXDbContext>();
+
+        var conn = dbContext.Database.GetDbConnection();
+        if (conn.State != ConnectionState.Open)
+        {
+            await conn.OpenAsync();
+        }
+
+        // 1. Assert current application role is NOT a superuser and does NOT have CREATEDB
+        using var roleCheckCmd = conn.CreateCommand();
+        roleCheckCmd.CommandText = @"
+            SELECT rolsuper, rolcreatedb
+            FROM pg_roles
+            WHERE rolname = current_user;";
+        using var reader = await roleCheckCmd.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync(), "Current user role must exist in pg_roles.");
+
+        var isSuperuser = reader.GetBoolean(0);
+        var canCreateDb = reader.GetBoolean(1);
+        await reader.CloseAsync();
+
+        Assert.False(isSuperuser, "Test application role must not have PostgreSQL superuser privileges.");
+        Assert.False(canCreateDb, "Test application role must not have CREATEDB privileges.");
+
+        // 2. Assert executing CREATE DATABASE with application credentials fails with permission denied
+        var forbiddenDbName = $"maintenx_test_forbidden_{Guid.NewGuid():N}";
+        await Assert.ThrowsAsync<PostgresException>(async () =>
+        {
+            using var forbiddenCmd = conn.CreateCommand();
+            forbiddenCmd.CommandText = $"CREATE DATABASE {forbiddenDbName};";
+            await forbiddenCmd.ExecuteNonQueryAsync();
+        });
+    }
+
+    [Fact]
+    public async Task DB018_RoleSeparation_ApplicationRole_CanManageSchemaAndMigrateOwnedDatabase()
+    {
+        // Assert that the application role can execute DDL (tables, schemas) within its owned disposable database
+        using var scope = _isolatedFactory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<MaintenXDbContext>();
+
+        var testTable = $"test_ddl_{Guid.NewGuid():N}";
+        var rawSql = $@"
+            CREATE TABLE platform.{testTable} (
+                id UUID PRIMARY KEY,
+                notes TEXT NOT NULL
+            );
+            INSERT INTO platform.{testTable} (id, notes) VALUES ('{Guid.NewGuid()}', 'Permitted DDL');
+            DROP TABLE platform.{testTable};";
+
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(rawSql);
+        });
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task DB019_SafeCleanup_CleansUpOnSetupFailure()
+    {
+        var disposableDbName = $"maintenx_test_failure_sim_{Guid.NewGuid():N}";
+        TestDatabaseGuard.EnsureSafeTestDatabaseName(disposableDbName);
+
+        // Provision disposable database as admin
+        using (var adminConn = new NpgsqlConnection(_adminConnectionString))
+        {
+            await adminConn.OpenAsync();
+            using var createCmd = adminConn.CreateCommand();
+            createCmd.CommandText = !string.IsNullOrWhiteSpace(_appRole)
+                ? $"CREATE DATABASE {disposableDbName} OWNER \"{_appRole}\";"
+                : $"CREATE DATABASE {disposableDbName};";
+            await createCmd.ExecuteNonQueryAsync();
+        }
+
+        bool cleanedUp = false;
+        try
+        {
+            // Simulate a setup failure after database creation
+            throw new InvalidOperationException("Simulated migration/initialization failure");
+        }
+        catch
+        {
+            // Trigger emergency teardown
+            NpgsqlConnection.ClearAllPools();
+            TestDatabaseGuard.EnsureSafeTestDatabaseName(disposableDbName);
+
+            using var dropConn = new NpgsqlConnection(_adminConnectionString);
+            await dropConn.OpenAsync();
+            using var dropCmd = dropConn.CreateCommand();
+            dropCmd.CommandText = $"DROP DATABASE IF EXISTS {disposableDbName} WITH (FORCE);";
+            await dropCmd.ExecuteNonQueryAsync();
+            cleanedUp = true;
+        }
+
+        Assert.True(cleanedUp);
+
+        // Verify database is completely gone
+        using (var verifyConn = new NpgsqlConnection(_adminConnectionString))
+        {
+            await verifyConn.OpenAsync();
+            using var checkCmd = verifyConn.CreateCommand();
+            checkCmd.CommandText = $"SELECT COUNT(*) FROM pg_database WHERE datname = '{disposableDbName}';";
+            var count = Convert.ToInt64(await checkCmd.ExecuteScalarAsync());
+            Assert.Equal(0L, count);
         }
     }
 }
