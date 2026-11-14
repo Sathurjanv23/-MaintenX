@@ -1,5 +1,6 @@
 namespace MaintenX.Api.Infrastructure.Persistence;
 
+using MaintenX.Api.Domain.Auth;
 using MaintenX.Api.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
 
@@ -19,6 +20,26 @@ public class MaintenXDbContext : DbContext
     /// Tenants catalog database set.
     /// </summary>
     public DbSet<Tenant> Tenants => Set<Tenant>();
+
+    /// <summary>
+    /// Authentication users identity database set.
+    /// </summary>
+    public DbSet<User> Users => Set<User>();
+
+    /// <summary>
+    /// User sessions database set.
+    /// </summary>
+    public DbSet<UserSession> UserSessions => Set<UserSession>();
+
+    /// <summary>
+    /// Refresh tokens database set.
+    /// </summary>
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+
+    /// <summary>
+    /// Security audit events database set.
+    /// </summary>
+    public DbSet<SecurityAuditEvent> SecurityAuditEvents => Set<SecurityAuditEvent>();
 
     public MaintenXDbContext(DbContextOptions<MaintenXDbContext> options)
         : base(options)
