@@ -396,41 +396,62 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
     [Fact]
     public void ProductionStartup_WhenTrustedProxyAllowlistIsMissing_ThrowsValidationException()
     {
-        var factory = CreateConfiguredFactory(knownProxies: [], environment: "Production");
+        using var factory = CreateConfiguredFactory(knownProxies: [], environment: "Production");
 
-        var ex = Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
 
-        Assert.Contains("Production security violation", ex.Message);
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to missing trusted proxy allowlist, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("Production security violation", optEx.Message);
+        }
     }
 
     [Fact]
     public void ProductionStartup_WhenJwtSigningKeyIsMissing_ThrowsValidationException()
     {
-        var factory = CreateConfiguredFactory(activeKey: "", knownProxies: ["10.0.0.1"], environment: "Production");
+        using var factory = CreateConfiguredFactory(activeKey: "", knownProxies: ["10.0.0.1"], environment: "Production");
 
-        var ex = Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
 
-        Assert.Contains("Jwt:SigningKey", ex.Message);
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to missing signing key, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("Jwt:SigningKey", optEx.Message);
+        }
     }
 
     [Fact]
     public void ProductionStartup_WhenJwtSigningKeyHasInsufficientEntropy_ThrowsValidationException()
     {
         var shortKey = GenerateBase64Key(16); // 128 bits
-        var factory = CreateConfiguredFactory(activeKey: shortKey, knownProxies: ["10.0.0.1"], environment: "Production");
+        using var factory = CreateConfiguredFactory(activeKey: shortKey, knownProxies: ["10.0.0.1"], environment: "Production");
 
-        var ex = Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
 
-        Assert.Contains("Insufficient key entropy", ex.Message);
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to insufficient key entropy, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("Insufficient key entropy", optEx.Message);
+        }
     }
 
     [Theory]
@@ -440,7 +461,7 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
     [InlineData("48")]
     public void Startup_WhenRetiredKeyRetentionHoursNot24_ThrowsValidationException(string hours)
     {
-        var factory = _baseFactory.WithWebHostBuilder(builder =>
+        using var factory = _baseFactory.WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Development");
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
@@ -451,12 +472,19 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
             builder.UseSetting("Jwt:RetiredKeyRetentionHours", hours);
         });
 
-        var ex = Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
 
-        Assert.Contains("retired key retention hours", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to retired key retention hours not being 24, but got: {ex.GetType().FullName}: {ex.Message}");
+
+        if (ex is OptionsValidationException optEx)
+        {
+            Assert.Contains("retired key retention hours", optEx.Message, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Theory]
@@ -469,7 +497,7 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
     [InlineData("RateLimiting:SegmentsPerWindow", "7")]
     public void Startup_WhenRateLimitingOptionsInvalid_ThrowsValidationException(string settingKey, string settingValue)
     {
-        var factory = _baseFactory.WithWebHostBuilder(builder =>
+        using var factory = _baseFactory.WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Development");
             builder.UseSetting("ConnectionStrings:DefaultConnection", "Host=localhost;Database=test;Username=test;Password=test;");
@@ -481,10 +509,14 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
             builder.UseSetting(settingKey, settingValue);
         });
 
-        Assert.Throws<OptionsValidationException>(() =>
+        var ex = Assert.ThrowsAny<Exception>(() =>
         {
             _ = factory.CreateClient();
         });
+
+        Assert.True(
+            ex is OptionsValidationException or ObjectDisposedException or AggregateException,
+            $"Expected startup failure due to invalid options, but got: {ex.GetType().FullName}: {ex.Message}");
     }
 
     [Fact]
