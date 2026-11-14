@@ -71,7 +71,20 @@ Commercial properties, universities, hospitals, and industrial facilities face s
   - Authored comprehensive [Database Architecture Documentation](docs/architecture/database-design.md) and [ADR-0002](docs/adr/ADR-0002-postgresql-efcore.md)
 
 ### Feature Roadmap *(Clearly Marked as Planned)*
-- [ ] **FEAT-002: Authentication** *(Planned)*
+- [ ] **FEAT-002: Authentication** *(In Progress)*
+  - [x] **T1: Security Configuration & Proxy Hardening**
+    - Strongly typed `JwtOptions` and fail-fast startup validator `JwtOptionsValidator` enforcing &ge; 256-bit Base64 keys, required issuer/audience, and `kid` headers
+    - Cryptographic key ring (`IJwtKeyRing`) supporting active key signing and verification ring for zero-downtime key rotation
+    - Trusted reverse proxy handling (`TrustedProxyOptions`) enforcing production allowlist validation (`KnownProxies`, `KnownNetworks`) to prevent client IP spoofing
+    - Rate-limiting infrastructure (`AuthRateLimitPolicies`) with sliding-window policies (Registration: 5/min, Login: 10/min, Refresh: 30/min), constrained missing-IP handling, and RFC 7807 Problem Details on HTTP 429
+    - Comprehensive test suite: 34 unit tests and 13 security integration tests
+  - [ ] **T2: Domain Entities & Invariants** *(Planned)*
+  - [ ] **T3: Persistence & EF Core Migrations** *(Planned)*
+  - [ ] **T4: Cryptography & Security Services** *(Planned)*
+  - [ ] **T5: Application Auth Services & Lifecycle** *(Planned)*
+  - [ ] **T6: Presentation Endpoints & OpenAPI Documentation** *(Planned)*
+  - [ ] **T7: End-to-End Automated Testing** *(Planned)*
+  - [ ] **T8: Architecture Documentation & ADR-0003** *(Planned)*
 - [ ] **FEAT-003: Multi-Tenancy** *(Planned)*
 - [ ] **FEAT-004: Role-Based Access Control** *(Planned)*
 - [ ] **FEAT-005: Next.js Authentication UI** *(Planned)*
@@ -192,7 +205,47 @@ export ConnectionStrings__DefaultConnection="Host=localhost;Port=5432;Database=m
 $env:ConnectionStrings__DefaultConnection = "Host=localhost;Port=5432;Database=maintenx_dev;Username=maintenx_app;Password=<your_local_app_password>;"
 ```
 
-### 4. Run ASP.NET Core Web API
+### 4. Configure Authentication & Security (FEAT-002)
+
+#### JWT Configuration & Secrets Management
+Authentication uses signed JSON Web Tokens (JWT) conforming to OAuth 2.0 Security BCP (**RFC 9700**).
+- **Required Configuration Names**:
+  - `Jwt:Issuer`: Expected token issuer (e.g. `https://api.maintenx.internal`).
+  - `Jwt:Audience`: Expected audience (e.g. `https://maintenx.internal`).
+  - `Jwt:KeyId`: Active Key ID (`kid`) header identifying the active signing key (e.g. `prod-key-2026-v1`).
+  - `Jwt:SigningKey`: Base64-encoded symmetric key containing at least 256 bits (32 decoded bytes).
+  - `Jwt:AccessTokenLifetimeMinutes`: Access token lifetime in minutes (strictly 15 minutes by default).
+  - `Jwt:VerificationKeys`: Dictionary mapping historical Key IDs to Base64 keys for zero-downtime key rotation.
+- **Local Development Setup**:
+  Safe non-production defaults are provided in `services/api/appsettings.Development.json` (`dev-key-2026-v1`), allowing immediate local development without secret setup.
+- **Production Secret Management**:
+  Base `appsettings.json` intentionally leaves key material empty. In production, keys must be provisioned via environment variables (`Jwt__SigningKey`, `Jwt__KeyId`) or a cloud secrets manager (e.g. AWS Secrets Manager, Azure Key Vault). Startup validation (`JwtOptionsValidator`) fails fast if keys are missing, invalid Base64, or under 256 bits.
+- **Signing-Key Rotation Procedure**:
+  1. Generate new 256-bit key: `openssl rand -base64 32` and assign a new Key ID (`kid`, e.g. `key-2026-v2`).
+  2. In your secrets store, move the retiring key to `Jwt:VerificationKeys:key-2026-v1`.
+  3. Set `Jwt:KeyId` to `key-2026-v2` and `Jwt:SigningKey` to the new key.
+  4. Deploy the configuration. New tokens are signed with `key-2026-v2`. Existing tokens signed with `key-2026-v1` remain valid until their 15-minute expiration expires.
+  5. After the 15-minute rotation window (typically 24 hours), remove `key-2026-v1` from `Jwt:VerificationKeys`.
+
+#### Trusted Reverse Proxy & Forwarded Headers
+- **Configuration**:
+  - `TrustedProxies:KnownProxies`: Array of trusted reverse proxy IP addresses.
+  - `TrustedProxies:KnownNetworks`: Array of trusted CIDR networks (e.g. `10.0.0.0/8`, `172.16.0.0/12`).
+  - `TrustedProxies:ForwardLimit`: Maximum number of proxy hops to evaluate (default `1`).
+- **Production Fail-Fast Security**:
+  In `Production` mode, `TrustedProxyOptionsValidator` crashes startup if both `KnownProxies` and `KnownNetworks` are empty, preventing client IP spoofing via untrusted `X-Forwarded-For` headers. In development/testing, loopback (`127.0.0.1`, `::1`) is trusted by default.
+
+#### Endpoint Rate Limiting
+- **Per-Instance Limits**:
+  - `Auth.Registration`: 5 requests / minute / IP
+  - `Auth.Login`: 10 requests / minute / IP
+  - `Auth.Refresh`: 30 requests / minute / IP
+- **Behavior**:
+  - Exceeding limits returns HTTP `429 Too Many Requests` with a standard RFC 7807 Problem Details payload and a `Retry-After` header.
+  - Unidentified/missing client IPs are isolated into a restricted single-permit partition, preventing bypass.
+  - *Limitation*: Rate limiting is partition-bound per API container. When scaling horizontally across multiple nodes, a distributed backplane (e.g. Redis) should be introduced.
+
+### 5. Run ASP.NET Core Web API
 ```bash
 dotnet run --project services/api/MaintenX.Api.csproj
 ```
