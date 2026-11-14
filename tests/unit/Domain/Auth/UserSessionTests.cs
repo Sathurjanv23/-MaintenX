@@ -120,6 +120,64 @@ public class UserSessionTests
     }
 
     [Theory]
+    [InlineData(SessionRevocationReason.UserLogout)]
+    [InlineData(SessionRevocationReason.PasswordChanged)]
+    [InlineData(SessionRevocationReason.SecurityStampMismatch)]
+    [InlineData(SessionRevocationReason.AccountSuspended)]
+    [InlineData(SessionRevocationReason.AccountDeactivated)]
+    [InlineData(SessionRevocationReason.TokenReplayDetected)]
+    [InlineData(SessionRevocationReason.AdminRevoked)]
+    [InlineData(SessionRevocationReason.Expired)]
+    public void Revoke_WithAllApprovedReasons_Succeeds(string validReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+        var revoked = session.Revoke(validReason, DateTime.UtcNow);
+
+        Assert.True(revoked);
+        Assert.True(session.IsRevoked);
+        Assert.Equal(validReason, session.RevocationReason);
+    }
+
+    [Theory]
+    [InlineData("ArbitraryReason")]
+    [InlineData("unknown_reason")]
+    [InlineData("UserRequestedLogout")]
+    [InlineData("MaliciousActivity")]
+    public void Revoke_WithUnapprovedStringReason_ThrowsArgumentException(string unapprovedReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+
+        Assert.Throws<ArgumentException>(() =>
+            session.Revoke(unapprovedReason, DateTime.UtcNow));
+    }
+
+    [Theory]
+    [InlineData(SessionRevocationReasonType.UserLogout, SessionRevocationReason.UserLogout)]
+    [InlineData(SessionRevocationReasonType.PasswordChanged, SessionRevocationReason.PasswordChanged)]
+    [InlineData(SessionRevocationReasonType.TokenReplayDetected, SessionRevocationReason.TokenReplayDetected)]
+    public void Revoke_WithTypedReasonEnum_Succeeds(SessionRevocationReasonType type, string expectedReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+        var revoked = session.Revoke(type, DateTime.UtcNow);
+
+        Assert.True(revoked);
+        Assert.True(session.IsRevoked);
+        Assert.Equal(expectedReason, session.RevocationReason);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(999)]
+    [InlineData(-1)]
+    public void Revoke_WithUndefinedTypedReasonEnum_ThrowsArgumentOutOfRangeException(int invalidReasonType)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            session.Revoke((SessionRevocationReasonType)invalidReasonType, DateTime.UtcNow));
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]

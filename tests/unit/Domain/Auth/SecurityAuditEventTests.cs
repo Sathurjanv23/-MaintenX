@@ -154,6 +154,68 @@ public class SecurityAuditEventTests
     }
 
     [Fact]
+    public void Metadata_DirectConstructorInvocation_ValidatesFieldsIdenticallyToFactory()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(reason: "user@domain.com"));
+
+        Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(detectedLineage: "$argon2id$v=19$hash"));
+
+        Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(actionTaken: "contains password keyword"));
+
+        var valid = new SecurityAuditMetadata("valid_reason", "lineage_1", "action_1");
+        Assert.Equal("valid_reason", valid.Reason);
+        Assert.Equal("lineage_1", valid.DetectedLineage);
+        Assert.Equal("action_1", valid.ActionTaken);
+    }
+
+    [Fact]
+    public void Metadata_HasNoPublicParameterlessConstructor()
+    {
+        var publicConstructors = typeof(SecurityAuditMetadata).GetConstructors(BindingFlags.Public | BindingFlags.Instance);
+        Assert.DoesNotContain(publicConstructors, ctor => ctor.GetParameters().Length == 0);
+
+        // Confirm non-public parameterless constructor exists for EF Core materialization
+        var nonPublicParameterlessCtor = typeof(SecurityAuditMetadata).GetConstructor(
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            null,
+            Type.EmptyTypes,
+            null);
+        Assert.NotNull(nonPublicParameterlessCtor);
+    }
+
+    [Fact]
+    public void Metadata_PropertiesMustNotHavePublicSetters()
+    {
+        var properties = typeof(SecurityAuditMetadata).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotEmpty(properties);
+
+        foreach (var prop in properties)
+        {
+            var setMethod = prop.GetSetMethod(nonPublic: false);
+            Assert.True(
+                setMethod == null,
+                $"Property '{prop.Name}' on '{nameof(SecurityAuditMetadata)}' must not have a public setter.");
+        }
+    }
+
+    [Fact]
+    public void Metadata_ValueEquality_BehavesCorrectly()
+    {
+        var m1 = SecurityAuditMetadata.Create("reason_a", "lineage_a", "action_a");
+        var m2 = new SecurityAuditMetadata("reason_a", "lineage_a", "action_a");
+        var m3 = SecurityAuditMetadata.Create("reason_b", "lineage_a", "action_a");
+
+        Assert.Equal(m1, m2);
+        Assert.True(m1 == m2);
+        Assert.NotEqual(m1, m3);
+        Assert.True(m1 != m3);
+        Assert.Equal(m1.GetHashCode(), m2.GetHashCode());
+    }
+
+    [Fact]
     public void DomainInvariants_SecurityAuditEventPropertiesMustNotHavePublicSetters()
     {
         var properties = typeof(SecurityAuditEvent).GetProperties(BindingFlags.Public | BindingFlags.Instance);

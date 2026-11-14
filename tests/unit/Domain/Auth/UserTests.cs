@@ -41,6 +41,16 @@ public class UserTests
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(99)]
+    [InlineData(-1)]
+    public void Create_WithUndefinedUserStatus_ThrowsArgumentOutOfRangeException(int invalidStatusValue)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            User.Create(ValidEmail, ValidPasswordHash, (UserStatus)invalidStatusValue));
+    }
+
+    [Theory]
     [InlineData("USER@DOMAIN.COM", "user@domain.com")]
     [InlineData("  user.name+tag@sub.domain.org  ", "user.name+tag@sub.domain.org")]
     [InlineData("Technician.123@MaintenX.INTERNAL", "technician.123@maintenx.internal")]

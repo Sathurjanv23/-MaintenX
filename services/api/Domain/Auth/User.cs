@@ -166,6 +166,14 @@ public sealed class User
         UserStatus status = UserStatus.Active,
         DateTime? utcNow = null)
     {
+        if (!Enum.IsDefined(typeof(UserStatus), status))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status),
+                status,
+                $"Supplied user status '{(int)status}' is not a valid UserStatus enum value.");
+        }
+
         var normalizedEmail = NormalizeAndValidateEmail(email);
         ArgumentException.ThrowIfNullOrWhiteSpace(passwordHash);
 

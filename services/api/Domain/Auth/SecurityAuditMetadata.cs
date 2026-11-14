@@ -3,11 +3,12 @@ namespace MaintenX.Api.Domain.Auth;
 using System.Text.RegularExpressions;
 
 /// <summary>
-/// Strictly structured, safe metadata value object for security audit events.
+/// Strictly structured, immutable safe metadata value object for security audit events.
 /// Only explicitly approved fields ('Reason', 'DetectedLineage', 'ActionTaken') are supported.
 /// Rejects arbitrary unapproved properties, passwords, password hashes, raw tokens, token hashes, and submitted email addresses.
+/// Prevents unvalidated construction by encapsulating property setters and validating all public construction paths.
 /// </summary>
-public sealed record SecurityAuditMetadata
+public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
 {
     private static readonly Regex Sha256HexRegex = new(
         @"^[a-fA-F0-9]{64}$",
@@ -16,24 +17,46 @@ public sealed record SecurityAuditMetadata
     /// <summary>
     /// Explicit audit reason (e.g., 'invalid_credentials', 'token_replay', 'user_logout', 'concurrency_stale_snapshot').
     /// </summary>
-    public string? Reason { get; init; }
+    public string? Reason { get; private set; }
 
     /// <summary>
     /// Audit lineage identifier or depth tracing token replacement hierarchy (e.g., 'predecessor_rotated', 'root_session').
     /// Raw token hashes are strictly prohibited.
     /// </summary>
-    public string? DetectedLineage { get; init; }
+    public string? DetectedLineage { get; private set; }
 
     /// <summary>
     /// Action taken in response to the security event (e.g., 'lockout_applied', 'session_revoked', 'login_permitted').
     /// </summary>
-    public string? ActionTaken { get; init; }
+    public string? ActionTaken { get; private set; }
 
     /// <summary>
-    /// Parameterless constructor for deserialization and EF Core materialization.
+    /// Non-public parameterless constructor reserved exclusively for EF Core entity materialization.
+    /// Application callers cannot invoke this constructor or bypass domain validation.
     /// </summary>
-    public SecurityAuditMetadata()
+    private SecurityAuditMetadata()
     {
+    }
+
+    /// <summary>
+    /// Public constructor validating all supplied metadata fields against platform security invariants.
+    /// </summary>
+    /// <param name="reason">Safe reason identifier.</param>
+    /// <param name="detectedLineage">Safe lineage identifier.</param>
+    /// <param name="actionTaken">Safe action-taken identifier.</param>
+    /// <exception cref="ArgumentException">Thrown if any supplied field violates safety rules or contains sensitive data.</exception>
+    public SecurityAuditMetadata(
+        string? reason = null,
+        string? detectedLineage = null,
+        string? actionTaken = null)
+    {
+        ValidateMetadataField(nameof(reason), reason);
+        ValidateMetadataField(nameof(detectedLineage), detectedLineage);
+        ValidateMetadataField(nameof(actionTaken), actionTaken);
+
+        Reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        DetectedLineage = string.IsNullOrWhiteSpace(detectedLineage) ? null : detectedLineage.Trim();
+        ActionTaken = string.IsNullOrWhiteSpace(actionTaken) ? null : actionTaken.Trim();
     }
 
     /// <summary>
@@ -49,16 +72,7 @@ public sealed record SecurityAuditMetadata
         string? detectedLineage = null,
         string? actionTaken = null)
     {
-        ValidateMetadataField(nameof(reason), reason);
-        ValidateMetadataField(nameof(detectedLineage), detectedLineage);
-        ValidateMetadataField(nameof(actionTaken), actionTaken);
-
-        return new SecurityAuditMetadata
-        {
-            Reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim(),
-            DetectedLineage = string.IsNullOrWhiteSpace(detectedLineage) ? null : detectedLineage.Trim(),
-            ActionTaken = string.IsNullOrWhiteSpace(actionTaken) ? null : actionTaken.Trim()
-        };
+        return new SecurityAuditMetadata(reason, detectedLineage, actionTaken);
     }
 
     private static void ValidateMetadataField(string fieldName, string? value)
@@ -110,4 +124,37 @@ public sealed record SecurityAuditMetadata
                 fieldName);
         }
     }
+
+    public bool Equals(SecurityAuditMetadata? other)
+    {
+        if (other is null)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(this, other))
+        {
+            return true;
+        }
+
+        return string.Equals(Reason, other.Reason, StringComparison.Ordinal)
+            && string.Equals(DetectedLineage, other.DetectedLineage, StringComparison.Ordinal)
+            && string.Equals(ActionTaken, other.ActionTaken, StringComparison.Ordinal);
+    }
+
+    public override bool Equals(object? obj) => Equals(obj as SecurityAuditMetadata);
+
+    public override int GetHashCode() => HashCode.Combine(Reason, DetectedLineage, ActionTaken);
+
+    public static bool operator ==(SecurityAuditMetadata? left, SecurityAuditMetadata? right)
+    {
+        if (left is null)
+        {
+            return right is null;
+        }
+
+        return left.Equals(right);
+    }
+
+    public static bool operator !=(SecurityAuditMetadata? left, SecurityAuditMetadata? right) => !(left == right);
 }
