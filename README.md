@@ -247,13 +247,16 @@ Authentication uses signed JSON Web Tokens (JWT) conforming to OAuth 2.0 Securit
   - `Auth.Registration`: 5 requests / minute / IP
   - `Auth.Login`: 10 requests / minute / IP
   - `Auth.Refresh`: 30 requests / minute / IP
-  - `RateLimiting:MaxTrackedPartitions`: Maximum concurrent IP partitions tracked in memory (default 10,000).
-- **Behavior & Memory Bound**:
+  - `RateLimiting:MaxTrackedPartitions`: Maximum concurrent IP partition slots tracked in memory per policy (default 10,000).
+- **Memory Bound & Concurrency Safety**:
   - Exceeding limits returns HTTP `429 Too Many Requests` with a standard RFC 7807 Problem Details payload and a `Retry-After` header.
-  - Unidentified/missing client IPs are isolated into a restricted single-permit partition, preventing bypass.
-  - High-cardinality IP traffic is managed by `BoundedPartitionTracker`. Active throttled IPs are never evicted by incoming traffic (preventing brute-force quota reset bypass). Under extreme flood saturation where concurrent active IPs exceed `MaxTrackedPartitions`, excess un-tracked traffic is routed to a constrained overflow partition.
-  - Expired partitions are automatically pruned after their sliding window elapses.
-  - *Limitation*: Rate limiting is partition-bound per API container. When scaling horizontally across multiple nodes, a distributed backplane (e.g. Redis) will be introduced in subsequent multi-instance features.
+  - Unidentified/missing client IPs are isolated into a restricted single-permit partition (`unresolved_{policy}`), preventing bypass.
+  - High-cardinality IP traffic is managed by `BoundedPartitionManager`. Instead of emitting unbounded dynamic keys, it manages a bounded pool of $N$ slots (`{policy}_slot_0` .. `{policy}_slot_{N-1}`), strictly bounding both tracking metadata and actual ASP.NET Core `PartitionedRateLimiter` cache instances to at most $(N + 2)$ limiters.
+  - **Atomic Admission**: Slot admission and pruning are executed under lock, guaranteeing concurrent requests can never exceed `MaxTrackedPartitions`.
+  - **No Brute-Force Bypass**: Active throttled IPs are never evicted by new incoming traffic. An attacker cannot reset their exhausted quota by flooding from new IPs.
+  - **Safe Reclamation**: Expired slots are reclaimed only after their full sliding window duration (60s) has elapsed, ensuring permits are fully replenished upon reassignment.
+  - **Overflow Protection**: Under extreme flood saturation where concurrent active IPs exceed `MaxTrackedPartitions`, excess un-tracked traffic is routed to a constrained overflow partition (`overflow_{policy}`).
+  - *Trade-offs*: Under extreme volumetric attacks exceeding 10,000 active concurrent IPs, new legitimate clients whose requests fall outside active slots will share the constrained overflow partition until previous active IP windows elapse. In subsequent multi-instance scaling, a distributed Redis backplane will be evaluated.
 
 ### 5. Run ASP.NET Core Web API
 ```bash

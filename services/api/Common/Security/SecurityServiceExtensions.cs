@@ -105,15 +105,7 @@ public static class SecurityServiceExtensions
         // 5. Memory-Bounded Rate Limiting Infrastructure
         services.Configure<RateLimitingOptions>(configuration.GetSection(RateLimitingOptions.SectionName));
 
-        services.AddSingleton<BoundedPartitionTracker>(sp =>
-        {
-            var rateOptions = sp.GetRequiredService<IOptions<RateLimitingOptions>>().Value;
-            var timeProvider = sp.GetRequiredService<TimeProvider>();
-            return new BoundedPartitionTracker(
-                rateOptions.MaxTrackedPartitions,
-                TimeSpan.FromSeconds(rateOptions.WindowSeconds),
-                timeProvider);
-        });
+        services.AddSingleton<AuthRateLimitManagers>();
 
         services.AddRateLimiter(limiterOptions =>
         {
@@ -158,15 +150,14 @@ public static class SecurityServiceExtensions
             // Policy: Auth.Registration (Default 5 req/min/IP)
             limiterOptions.AddPolicy(AuthRateLimitPolicies.Registration, httpContext =>
             {
-                var partitionTracker = httpContext.RequestServices.GetRequiredService<BoundedPartitionTracker>();
+                var managers = httpContext.RequestServices.GetRequiredService<AuthRateLimitManagers>();
                 var clientIp = ResolveClientIp(httpContext);
-                var partitionKey = partitionTracker.ResolvePartitionKey("registration", clientIp);
+                var resolution = managers.Registration.ResolvePartition(clientIp);
 
-                if (partitionKey.StartsWith("unresolved_", StringComparison.Ordinal) ||
-                    partitionKey.StartsWith("overflow_", StringComparison.Ordinal))
+                if (resolution.Kind != PartitionKind.Tracked)
                 {
                     return RateLimitPartition.GetFixedWindowLimiter(
-                        partitionKey,
+                        resolution.PartitionKey,
                         _ => new FixedWindowRateLimiterOptions
                         {
                             PermitLimit = 1,
@@ -176,7 +167,7 @@ public static class SecurityServiceExtensions
                 }
 
                 return RateLimitPartition.GetSlidingWindowLimiter(
-                    partitionKey,
+                    resolution.PartitionKey,
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.RegistrationPermitLimit,
@@ -190,15 +181,14 @@ public static class SecurityServiceExtensions
             // Policy: Auth.Login (Default 10 req/min/IP)
             limiterOptions.AddPolicy(AuthRateLimitPolicies.Login, httpContext =>
             {
-                var partitionTracker = httpContext.RequestServices.GetRequiredService<BoundedPartitionTracker>();
+                var managers = httpContext.RequestServices.GetRequiredService<AuthRateLimitManagers>();
                 var clientIp = ResolveClientIp(httpContext);
-                var partitionKey = partitionTracker.ResolvePartitionKey("login", clientIp);
+                var resolution = managers.Login.ResolvePartition(clientIp);
 
-                if (partitionKey.StartsWith("unresolved_", StringComparison.Ordinal) ||
-                    partitionKey.StartsWith("overflow_", StringComparison.Ordinal))
+                if (resolution.Kind != PartitionKind.Tracked)
                 {
                     return RateLimitPartition.GetFixedWindowLimiter(
-                        partitionKey,
+                        resolution.PartitionKey,
                         _ => new FixedWindowRateLimiterOptions
                         {
                             PermitLimit = 1,
@@ -208,7 +198,7 @@ public static class SecurityServiceExtensions
                 }
 
                 return RateLimitPartition.GetSlidingWindowLimiter(
-                    partitionKey,
+                    resolution.PartitionKey,
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.LoginPermitLimit,
@@ -222,15 +212,14 @@ public static class SecurityServiceExtensions
             // Policy: Auth.Refresh (Default 30 req/min/IP)
             limiterOptions.AddPolicy(AuthRateLimitPolicies.Refresh, httpContext =>
             {
-                var partitionTracker = httpContext.RequestServices.GetRequiredService<BoundedPartitionTracker>();
+                var managers = httpContext.RequestServices.GetRequiredService<AuthRateLimitManagers>();
                 var clientIp = ResolveClientIp(httpContext);
-                var partitionKey = partitionTracker.ResolvePartitionKey("refresh", clientIp);
+                var resolution = managers.Refresh.ResolvePartition(clientIp);
 
-                if (partitionKey.StartsWith("unresolved_", StringComparison.Ordinal) ||
-                    partitionKey.StartsWith("overflow_", StringComparison.Ordinal))
+                if (resolution.Kind != PartitionKind.Tracked)
                 {
                     return RateLimitPartition.GetFixedWindowLimiter(
-                        partitionKey,
+                        resolution.PartitionKey,
                         _ => new FixedWindowRateLimiterOptions
                         {
                             PermitLimit = 1,
@@ -240,7 +229,7 @@ public static class SecurityServiceExtensions
                 }
 
                 return RateLimitPartition.GetSlidingWindowLimiter(
-                    partitionKey,
+                    resolution.PartitionKey,
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.RefreshPermitLimit,

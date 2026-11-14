@@ -494,7 +494,7 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
         });
 
         var client = factory.CreateClient();
-        var tracker = factory.Services.GetRequiredService<BoundedPartitionTracker>();
+        var managers = factory.Services.GetRequiredService<AuthRateLimitManagers>();
 
         // 3 unique IPs fill the partition capacity
         for (int i = 1; i <= 3; i++)
@@ -505,7 +505,7 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         }
 
-        Assert.Equal(3, tracker.ActiveTrackedCount);
+        Assert.Equal(3, managers.Login.ActiveTrackedCount);
 
         // Send request from 4th unique IP: capacity is full, routed to overflow partition (1 permit limit)
         using (var req4 = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login"))
@@ -515,7 +515,7 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
             Assert.Equal(HttpStatusCode.OK, resp4.StatusCode);
         }
 
-        Assert.Equal(3, tracker.ActiveTrackedCount);
+        Assert.Equal(3, managers.Login.ActiveTrackedCount);
 
         // 5th unique IP also hits overflow partition, which has exhausted its 1 permit -> throttled with 429
         using (var req5 = new HttpRequestMessage(HttpMethod.Get, "/test-security/rate-limit-login"))
@@ -525,7 +525,9 @@ public class SecurityConfigurationIntegrationTests : IClassFixture<WebApplicatio
             Assert.Equal(HttpStatusCode.TooManyRequests, resp5.StatusCode);
         }
 
-        Assert.Equal(3, tracker.ActiveTrackedCount);
+        Assert.Equal(3, managers.Login.ActiveTrackedCount);
+        // Distinct keys ever issued to framework limiter cannot exceed 3 slots + 1 overflow key
+        Assert.True(managers.Login.DistinctPartitionKeysEverIssued <= 4);
     }
 
     private sealed class TestSocketSimulationStartupFilter : IStartupFilter
