@@ -27,9 +27,10 @@ docker run -d --name "$CONTAINER" \
     -v "$HOST_INIT_DIR:/docker-entrypoint-initdb.d:ro" \
     postgres:16-alpine
 
-# Wait for server readiness
+# Wait for initialization to complete and real server to accept connections
 for i in $(seq 1 30); do
-    if docker exec "$CONTAINER" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+    if docker logs "$CONTAINER" 2>&1 | grep -q "PostgreSQL init process complete" && \
+       docker exec "$CONTAINER" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
         break
     fi
     sleep 1
