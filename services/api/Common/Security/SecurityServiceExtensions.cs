@@ -3,8 +3,10 @@ namespace MaintenX.Api.Common.Security;
 using System.Net;
 using System.Threading.RateLimiting;
 using MaintenX.Api.Configuration;
+using MaintenX.Api.Domain.Auth;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -243,6 +245,15 @@ public static class SecurityServiceExtensions
                     });
             });
         });
+
+        // 6. Authentication Security Services (FEAT-002 T4)
+        services.AddMemoryCache();
+        services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
+        services.AddSingleton<IPasswordSecurityService, PasswordSecurityService>();
+        services.AddSingleton<IJwtTokenService, JwtTokenService>();
+        services.AddSingleton<IRefreshTokenService, RefreshTokenService>();
+        services.AddScoped<IUserSecurityStampStore, EfUserSecurityStampStore>();
+        services.AddScoped<ISecurityStampValidator, SecurityStampValidator>();
 
         return services;
     }

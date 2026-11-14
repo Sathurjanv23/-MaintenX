@@ -343,6 +343,28 @@ public sealed class User
     }
 
     /// <summary>
+    /// Updates the user's password hash during a transparent cryptographic rehash without rotating
+    /// the security stamp or terminating active sessions.
+    /// </summary>
+    /// <param name="newPasswordHash">New cryptographic password hash.</param>
+    /// <param name="utcNow">Current UTC timestamp.</param>
+    /// <exception cref="ArgumentException">Thrown if newPasswordHash is null or whitespace.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if user is not active.</exception>
+    public void RehashPassword(string newPasswordHash, DateTime utcNow)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(newPasswordHash);
+
+        if (Status != UserStatus.Active)
+        {
+            throw new InvalidOperationException($"Cannot rehash password for user '{Id}' with status '{Status}'. Only active accounts can be rehashed.");
+        }
+
+        PasswordHash = newPasswordHash.Trim();
+        UpdatedAtUtc = utcNow;
+        Version++;
+    }
+
+    /// <summary>
     /// Rotates the security stamp to invalidate all active sessions and refresh tokens without modifying credentials.
     /// </summary>
     /// <param name="utcNow">Current UTC timestamp.</param>
