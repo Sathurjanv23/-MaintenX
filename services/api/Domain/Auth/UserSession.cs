@@ -104,16 +104,16 @@ public sealed class UserSession
     }
 
     /// <summary>
-    /// Revokes the session with an audit reason.
+    /// Revokes the session with an approved audit reason from the controlled revocation set.
     /// If the session is already revoked, repeated revocation is a no-op to prevent state corruption.
     /// </summary>
-    /// <param name="reason">Revocation reason (must be non-empty).</param>
+    /// <param name="reason">Revocation reason (must be one of the approved SessionRevocationReason values).</param>
     /// <param name="utcNow">Current UTC timestamp.</param>
     /// <returns>True if the session was transitioned from active to revoked; false if already revoked.</returns>
-    /// <exception cref="ArgumentException">Thrown when reason is null or whitespace.</exception>
+    /// <exception cref="ArgumentException">Thrown when reason is null, whitespace, or not in the controlled approved set.</exception>
     public bool Revoke(string reason, DateTime utcNow)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        var validatedReason = SessionRevocationReason.ValidateAndNormalize(reason);
 
         if (IsRevoked)
         {
@@ -121,9 +121,29 @@ public sealed class UserSession
         }
 
         RevokedAtUtc = utcNow;
-        RevocationReason = reason.Trim();
+        RevocationReason = validatedReason;
         Version++;
         return true;
+    }
+
+    /// <summary>
+    /// Revokes the session using a strongly typed <see cref="SessionRevocationReasonType"/>.
+    /// </summary>
+    /// <param name="reasonType">Approved typed revocation reason.</param>
+    /// <param name="utcNow">Current UTC timestamp.</param>
+    /// <returns>True if the session was transitioned from active to revoked; false if already revoked.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">Thrown when an undefined enum value is provided.</exception>
+    public bool Revoke(SessionRevocationReasonType reasonType, DateTime utcNow)
+    {
+        if (!Enum.IsDefined(typeof(SessionRevocationReasonType), reasonType))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(reasonType),
+                reasonType,
+                $"Supplied revocation reason type '{(int)reasonType}' is not a valid SessionRevocationReasonType enum value.");
+        }
+
+        return Revoke(reasonType.ToString(), utcNow);
     }
 
     /// <summary>

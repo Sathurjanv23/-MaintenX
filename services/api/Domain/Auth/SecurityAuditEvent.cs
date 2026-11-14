@@ -84,7 +84,7 @@ public sealed class SecurityAuditEvent
         if (!IPAddress.TryParse(trimmed, out var parsedIp))
         {
             throw new ArgumentException(
-                $"Client IP address '{clientIp}' is invalid. Must be a valid IPv4 or IPv6 address.",
+                "Client IP address is invalid. Must be a valid IPv4 or IPv6 address.",
                 nameof(clientIp));
         }
 

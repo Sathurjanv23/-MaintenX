@@ -120,6 +120,64 @@ public class UserSessionTests
     }
 
     [Theory]
+    [InlineData(SessionRevocationReason.UserLogout)]
+    [InlineData(SessionRevocationReason.PasswordChanged)]
+    [InlineData(SessionRevocationReason.SecurityStampMismatch)]
+    [InlineData(SessionRevocationReason.AccountSuspended)]
+    [InlineData(SessionRevocationReason.AccountDeactivated)]
+    [InlineData(SessionRevocationReason.TokenReplayDetected)]
+    [InlineData(SessionRevocationReason.AdminRevoked)]
+    [InlineData(SessionRevocationReason.Expired)]
+    public void Revoke_WithAllApprovedReasons_Succeeds(string validReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+        var revoked = session.Revoke(validReason, DateTime.UtcNow);
+
+        Assert.True(revoked);
+        Assert.True(session.IsRevoked);
+        Assert.Equal(validReason, session.RevocationReason);
+    }
+
+    [Theory]
+    [InlineData("ArbitraryReason")]
+    [InlineData("unknown_reason")]
+    [InlineData("UserRequestedLogout")]
+    [InlineData("MaliciousActivity")]
+    public void Revoke_WithUnapprovedStringReason_ThrowsArgumentException(string unapprovedReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+
+        Assert.Throws<ArgumentException>(() =>
+            session.Revoke(unapprovedReason, DateTime.UtcNow));
+    }
+
+    [Theory]
+    [InlineData(SessionRevocationReasonType.UserLogout, SessionRevocationReason.UserLogout)]
+    [InlineData(SessionRevocationReasonType.PasswordChanged, SessionRevocationReason.PasswordChanged)]
+    [InlineData(SessionRevocationReasonType.TokenReplayDetected, SessionRevocationReason.TokenReplayDetected)]
+    public void Revoke_WithTypedReasonEnum_Succeeds(SessionRevocationReasonType type, string expectedReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+        var revoked = session.Revoke(type, DateTime.UtcNow);
+
+        Assert.True(revoked);
+        Assert.True(session.IsRevoked);
+        Assert.Equal(expectedReason, session.RevocationReason);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(999)]
+    [InlineData(-1)]
+    public void Revoke_WithUndefinedTypedReasonEnum_ThrowsArgumentOutOfRangeException(int invalidReasonType)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            session.Revoke((SessionRevocationReasonType)invalidReasonType, DateTime.UtcNow));
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
@@ -129,6 +187,38 @@ public class UserSessionTests
 
         Assert.ThrowsAny<ArgumentException>(() =>
             session.Revoke(invalidReason!, DateTime.UtcNow));
+    }
+
+    [Theory]
+    [InlineData("password123456!")]
+    [InlineData("user@maintenx.internal")]
+    [InlineData("Bearer secret-token-value")]
+    [InlineData("custom_unapproved_reason")]
+    public void Revoke_WhenSensitiveOrUnapprovedReasonPassed_ThrowsWithoutLeakingValueInMessage(string sensitiveReason)
+    {
+        var session = UserSession.Create(ValidUserId, DateTime.UtcNow, DefaultLifetime);
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            session.Revoke(sensitiveReason, DateTime.UtcNow));
+
+        Assert.DoesNotContain(sensitiveReason, ex.Message);
+        Assert.StartsWith("Session revocation reason is not approved.", ex.Message);
+    }
+
+    [Fact]
+    public void AllowedReasons_CannotBeMutatedThroughCastOrPublicApi()
+    {
+        // 1. Backing type is genuinely an immutable FrozenSet<string>
+        Assert.IsAssignableFrom<System.Collections.Frozen.FrozenSet<string>>(SessionRevocationReason.AllowedReasons);
+
+        // 2. Casting to mutable HashSet throws InvalidCastException
+        Assert.Throws<InvalidCastException>(() =>
+            (HashSet<string>)(object)SessionRevocationReason.AllowedReasons);
+
+        // 3. Casting to ICollection<string> has IsReadOnly = true and Add() throws NotSupportedException
+        var collection = (ICollection<string>)SessionRevocationReason.AllowedReasons;
+        Assert.True(collection.IsReadOnly);
+        Assert.Throws<NotSupportedException>(() => collection.Add("UnapprovedReasonAddedViaCast"));
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 namespace MaintenX.UnitTests.Domain.Auth;
 
+using System.Collections.Frozen;
 using System.Reflection;
 using MaintenX.Api.Domain.Auth;
 using Xunit;
@@ -10,14 +11,14 @@ public class SecurityAuditEventTests
     private static readonly Guid ValidSessionId = Guid.NewGuid();
 
     [Fact]
-    public void Create_WithValidParameters_InitializesEventCorrectly()
+    public void Create_WithValidApprovedParameters_InitializesEventCorrectly()
     {
         var now = DateTime.UtcNow;
         const string clientIp = "192.168.1.100";
         var meta = SecurityAuditMetadata.Create(
-            reason: "invalid_credentials",
-            detectedLineage: "predecessor_rotated",
-            actionTaken: "lockout_applied");
+            reason: SecurityAuditMetadata.Reasons.InvalidCredentials,
+            detectedLineage: SecurityAuditMetadata.Lineages.PredecessorRotated,
+            actionTaken: SecurityAuditMetadata.Actions.LockoutApplied);
 
         var evt = SecurityAuditEvent.Create(
             SecurityAuditEventType.LoginFailed,
@@ -33,9 +34,9 @@ public class SecurityAuditEventTests
         Assert.Equal(ValidSessionId, evt.SessionId);
         Assert.Equal(clientIp, evt.ClientIp);
         Assert.NotNull(evt.Metadata);
-        Assert.Equal("invalid_credentials", evt.Reason);
-        Assert.Equal("predecessor_rotated", evt.DetectedLineage);
-        Assert.Equal("lockout_applied", evt.ActionTaken);
+        Assert.Equal(SecurityAuditMetadata.Reasons.InvalidCredentials, evt.Reason);
+        Assert.Equal(SecurityAuditMetadata.Lineages.PredecessorRotated, evt.DetectedLineage);
+        Assert.Equal(SecurityAuditMetadata.Actions.LockoutApplied, evt.ActionTaken);
         Assert.Equal(now, evt.CreatedAtUtc);
     }
 
@@ -49,13 +50,13 @@ public class SecurityAuditEventTests
             ValidUserId,
             ValidSessionId,
             "10.0.0.1",
-            reason: "token_replay",
+            reason: SecurityAuditMetadata.Reasons.TokenReplay,
             detectedLineage: "ancestor_v1",
-            actionTaken: "session_revoked");
+            actionTaken: SecurityAuditMetadata.Actions.SessionRevoked);
 
-        Assert.Equal("token_replay", evt.Reason);
+        Assert.Equal(SecurityAuditMetadata.Reasons.TokenReplay, evt.Reason);
         Assert.Equal("ancestor_v1", evt.DetectedLineage);
-        Assert.Equal("session_revoked", evt.ActionTaken);
+        Assert.Equal(SecurityAuditMetadata.Actions.SessionRevoked, evt.ActionTaken);
     }
 
     [Fact]
@@ -107,50 +108,232 @@ public class SecurityAuditEventTests
     }
 
     [Theory]
+    [InlineData(SecurityAuditMetadata.Reasons.StandardLogin)]
+    [InlineData(SecurityAuditMetadata.Reasons.InvalidCredentials)]
+    [InlineData(SecurityAuditMetadata.Reasons.AccountLocked)]
+    [InlineData(SecurityAuditMetadata.Reasons.TokenReplay)]
+    [InlineData(SecurityAuditMetadata.Reasons.UserLogout)]
+    [InlineData(SecurityAuditMetadata.Reasons.PasswordChanged)]
+    public void Metadata_WithApprovedReasons_Succeeds(string approvedReason)
+    {
+        var meta = SecurityAuditMetadata.Create(reason: approvedReason);
+        Assert.Equal(approvedReason, meta.Reason);
+    }
+
+    [Theory]
+    [InlineData(SecurityAuditMetadata.Actions.Permit)]
+    [InlineData(SecurityAuditMetadata.Actions.Deny)]
+    [InlineData(SecurityAuditMetadata.Actions.LockoutApplied)]
+    [InlineData(SecurityAuditMetadata.Actions.SessionRevoked)]
+    [InlineData(SecurityAuditMetadata.Actions.TokenRotated)]
+    public void Metadata_WithApprovedActions_Succeeds(string approvedAction)
+    {
+        var meta = SecurityAuditMetadata.Create(actionTaken: approvedAction);
+        Assert.Equal(approvedAction, meta.ActionTaken);
+    }
+
+    [Theory]
+    [InlineData(SecurityAuditMetadata.Lineages.RootSession)]
+    [InlineData(SecurityAuditMetadata.Lineages.PredecessorRotated)]
+    [InlineData("lineage_1")]
+    [InlineData("ancestor_v1")]
+    [InlineData("generation_2")]
+    [InlineData("depth_3")]
+    public void Metadata_WithApprovedOrConstrainedLineages_Succeeds(string validLineage)
+    {
+        var meta = SecurityAuditMetadata.Create(detectedLineage: validLineage);
+        Assert.Equal(validLineage, meta.DetectedLineage);
+    }
+
+    [Theory]
+    [InlineData("arbitrary free form text")]
+    [InlineData("user entered wrong password")]
+    [InlineData("valid_reason")]
+    [InlineData("something_custom")]
     [InlineData("user@example.com")]
-    [InlineData("admin@maintenx.internal")]
-    [InlineData("login attempt for bob@test.com")]
-    public void Metadata_WithEmailAddress_ThrowsArgumentException(string valueWithEmail)
-    {
-        Assert.Throws<ArgumentException>(() =>
-            SecurityAuditMetadata.Create(reason: valueWithEmail));
-    }
-
-    [Theory]
+    [InlineData("+1-800-555-0199")]
+    [InlineData("0771234567")]
+    [InlineData("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M")]
+    [InlineData("Bearer secrettoken123")]
     [InlineData("$argon2id$v=19$m=65536,t=3,p=4$somehash")]
-    [InlineData("$pbkdf2-sha256$29000$test")]
-    [InlineData("$2a$12$abcdefghijklmnopqrstuv")]
-    public void Metadata_WithPasswordHash_ThrowsArgumentException(string valueWithHash)
+    public void Metadata_WithUnapprovedReason_ThrowsArgumentException(string unapprovedReason)
     {
         Assert.Throws<ArgumentException>(() =>
-            SecurityAuditMetadata.Create(reason: valueWithHash));
-    }
+            SecurityAuditMetadata.Create(reason: unapprovedReason));
 
-    [Fact]
-    public void Metadata_WithRaw64CharHexTokenHash_ThrowsArgumentException()
-    {
-        const string raw64CharHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         Assert.Throws<ArgumentException>(() =>
-            SecurityAuditMetadata.Create(detectedLineage: raw64CharHash));
+            new SecurityAuditMetadata(reason: unapprovedReason));
     }
 
     [Theory]
-    [InlineData("User entered password: wrong")]
-    [InlineData("client sent secret in body")]
-    [InlineData("Authorization: Bearer eyJhbGciOi...")]
-    [InlineData("current SecurityStamp was 12345")]
-    public void Metadata_WithProhibitedSensitiveKeywords_ThrowsArgumentException(string sensitiveValue)
+    [InlineData("arbitrary action text")]
+    [InlineData("custom_action")]
+    [InlineData("user@example.com")]
+    [InlineData("+1-555-0199")]
+    [InlineData("eyJhbGciOiJIUzI1Ni...")]
+    [InlineData("password123")]
+    public void Metadata_WithUnapprovedAction_ThrowsArgumentException(string unapprovedAction)
     {
         Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(actionTaken: unapprovedAction));
+
+        Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(actionTaken: unapprovedAction));
+    }
+
+    [Theory]
+    [InlineData("unapproved_lineage")]
+    [InlineData("user@example.com")]
+    [InlineData("+1-800-555-0199")]
+    [InlineData("eyJhbGciOi...")]
+    [InlineData("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")]
+    [InlineData("bad/format")]
+    [InlineData("lineage with spaces")]
+    public void Metadata_WithUnapprovedLineage_ThrowsArgumentException(string unapprovedLineage)
+    {
+        Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(detectedLineage: unapprovedLineage));
+
+        Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(detectedLineage: unapprovedLineage));
+    }
+
+    [Theory]
+    [InlineData("password123456!")]
+    [InlineData("admin@maintenx.internal")]
+    [InlineData("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sensitive_payload")]
+    [InlineData("Bearer secret-token-value")]
+    [InlineData("+1-800-555-0199")]
+    public void MetadataValidation_WhenSensitiveValuesPassed_ThrowsWithoutLeakingValueInMessage(string sensitiveValue)
+    {
+        // 1. Reason
+        var reasonEx = Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(reason: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, reasonEx.Message);
+        Assert.StartsWith("Audit reason is not an approved identifier.", reasonEx.Message);
+
+        var ctorReasonEx = Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(reason: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, ctorReasonEx.Message);
+        Assert.StartsWith("Audit reason is not an approved identifier.", ctorReasonEx.Message);
+
+        // 2. ActionTaken
+        var actionEx = Assert.Throws<ArgumentException>(() =>
             SecurityAuditMetadata.Create(actionTaken: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, actionEx.Message);
+        Assert.StartsWith("Audit action is not an approved identifier.", actionEx.Message);
+
+        var ctorActionEx = Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(actionTaken: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, ctorActionEx.Message);
+        Assert.StartsWith("Audit action is not an approved identifier.", ctorActionEx.Message);
+
+        // 3. DetectedLineage
+        var lineageEx = Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(detectedLineage: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, lineageEx.Message);
+        Assert.StartsWith("Audit lineage identifier has an invalid format.", lineageEx.Message);
+
+        var ctorLineageEx = Assert.Throws<ArgumentException>(() =>
+            new SecurityAuditMetadata(detectedLineage: sensitiveValue));
+        Assert.DoesNotContain(sensitiveValue, ctorLineageEx.Message);
+        Assert.StartsWith("Audit lineage identifier has an invalid format.", ctorLineageEx.Message);
     }
 
     [Fact]
-    public void Metadata_Exceeding200Characters_ThrowsArgumentException()
+    public void Metadata_DirectConstructorAndFactory_EnforceIdenticalValidation()
     {
-        var longValue = new string('a', 201);
+        // Both reject unapproved values identically
         Assert.Throws<ArgumentException>(() =>
-            SecurityAuditMetadata.Create(reason: longValue));
+            new SecurityAuditMetadata(reason: "unapproved"));
+        Assert.Throws<ArgumentException>(() =>
+            SecurityAuditMetadata.Create(reason: "unapproved"));
+
+        // Both construct identical valid objects
+        var fromCtor = new SecurityAuditMetadata(
+            SecurityAuditMetadata.Reasons.StandardLogin,
+            "lineage_1",
+            SecurityAuditMetadata.Actions.Permit);
+
+        var fromFactory = SecurityAuditMetadata.Create(
+            SecurityAuditMetadata.Reasons.StandardLogin,
+            "lineage_1",
+            SecurityAuditMetadata.Actions.Permit);
+
+        Assert.Equal(fromCtor, fromFactory);
+        Assert.True(fromCtor == fromFactory);
+    }
+
+    [Fact]
+    public void Metadata_HasNoPublicParameterlessConstructor()
+    {
+        var publicConstructors = typeof(SecurityAuditMetadata).GetConstructors(BindingFlags.Public | BindingFlags.Instance);
+        Assert.DoesNotContain(publicConstructors, ctor => ctor.GetParameters().Length == 0);
+
+        // Confirm non-public parameterless constructor exists for EF Core materialization
+        var nonPublicParameterlessCtor = typeof(SecurityAuditMetadata).GetConstructor(
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            null,
+            Type.EmptyTypes,
+            null);
+        Assert.NotNull(nonPublicParameterlessCtor);
+    }
+
+    [Fact]
+    public void Metadata_PropertiesMustNotHavePublicSetters()
+    {
+        var properties = typeof(SecurityAuditMetadata).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        Assert.NotEmpty(properties);
+
+        foreach (var prop in properties)
+        {
+            var setMethod = prop.GetSetMethod(nonPublic: false);
+            Assert.True(
+                setMethod == null,
+                $"Property '{prop.Name}' on '{nameof(SecurityAuditMetadata)}' must not have a public setter.");
+        }
+    }
+
+    [Fact]
+    public void Metadata_AllowLists_AreGenuinelyImmutableFrozenSets()
+    {
+        Assert.IsAssignableFrom<FrozenSet<string>>(SecurityAuditMetadata.ApprovedReasons);
+        Assert.IsAssignableFrom<FrozenSet<string>>(SecurityAuditMetadata.ApprovedActions);
+        Assert.IsAssignableFrom<FrozenSet<string>>(SecurityAuditMetadata.ApprovedLineages);
+
+        // Casting to mutable HashSet throws InvalidCastException
+        Assert.Throws<InvalidCastException>(() =>
+            (HashSet<string>)(object)SecurityAuditMetadata.ApprovedReasons);
+
+        // Cannot add via ICollection
+        var col = (ICollection<string>)SecurityAuditMetadata.ApprovedReasons;
+        Assert.True(col.IsReadOnly);
+        Assert.Throws<NotSupportedException>(() => col.Add("injected_reason"));
+    }
+
+    [Fact]
+    public void Metadata_ValueEquality_BehavesCorrectly()
+    {
+        var m1 = SecurityAuditMetadata.Create(
+            SecurityAuditMetadata.Reasons.StandardLogin,
+            SecurityAuditMetadata.Lineages.PredecessorRotated,
+            SecurityAuditMetadata.Actions.Permit);
+
+        var m2 = new SecurityAuditMetadata(
+            SecurityAuditMetadata.Reasons.StandardLogin,
+            SecurityAuditMetadata.Lineages.PredecessorRotated,
+            SecurityAuditMetadata.Actions.Permit);
+
+        var m3 = SecurityAuditMetadata.Create(
+            SecurityAuditMetadata.Reasons.InvalidCredentials,
+            SecurityAuditMetadata.Lineages.PredecessorRotated,
+            SecurityAuditMetadata.Actions.Deny);
+
+        Assert.Equal(m1, m2);
+        Assert.True(m1 == m2);
+        Assert.NotEqual(m1, m3);
+        Assert.True(m1 != m3);
+        Assert.Equal(m1.GetHashCode(), m2.GetHashCode());
     }
 
     [Fact]
@@ -177,9 +360,9 @@ public class SecurityAuditEventTests
             ValidUserId,
             ValidSessionId,
             "10.0.0.1",
-            reason: "standard_login",
+            reason: SecurityAuditMetadata.Reasons.StandardLogin,
             detectedLineage: null,
-            actionTaken: "permit");
+            actionTaken: SecurityAuditMetadata.Actions.Permit);
 
         var repr = evt.ToString();
 
@@ -188,6 +371,6 @@ public class SecurityAuditEventTests
         Assert.Contains(ValidUserId.ToString(), repr);
         Assert.Contains(ValidSessionId.ToString(), repr);
         Assert.Contains("10.0.0.1", repr);
-        Assert.Contains("standard_login", repr);
+        Assert.Contains(SecurityAuditMetadata.Reasons.StandardLogin, repr);
     }
 }

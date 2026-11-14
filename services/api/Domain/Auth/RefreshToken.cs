@@ -111,7 +111,7 @@ public sealed class RefreshToken
         if (trimmed.Length != 64 || !Sha256HexRegex.IsMatch(trimmed))
         {
             throw new ArgumentException(
-                $"Token hash '{tokenHash}' is invalid. Refresh token hashes must be exactly 64 lowercase hexadecimal characters representing a SHA-256 digest.",
+                "Token hash is invalid. Refresh token hashes must be exactly 64 lowercase hexadecimal characters representing a SHA-256 digest.",
                 nameof(tokenHash));
         }
 
