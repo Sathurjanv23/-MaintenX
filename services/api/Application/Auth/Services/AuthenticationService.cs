@@ -190,76 +190,80 @@ public sealed class AuthenticationService : IAuthenticationService
         // 5. Verification Failed Workflow
         if (verification == Microsoft.AspNetCore.Identity.PasswordVerificationResult.Failed)
         {
-            await using var failTx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-
-            var lockedUser = await _dbContext.LockUserForUpdateAsync(snapshot.Id, cancellationToken);
-            if (lockedUser == null)
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
             {
-                await failTx.RollbackAsync(cancellationToken);
-                return LoginResult.InvalidCredentials();
-            }
+                await using var failTx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
-            // Only apply failure count if user is active and password has not been changed concurrently
-            if (lockedUser.Status == UserStatus.Active &&
-                string.Equals(lockedUser.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
-            {
-                if (lockedUser.IsLockedOut(utcNow))
+                var lockedUser = await _dbContext.LockUserForUpdateAsync(snapshot.Id, cancellationToken);
+                if (lockedUser == null)
                 {
                     await failTx.RollbackAsync(cancellationToken);
-                    return LoginResult.LockedOut(lockedUser.LockoutEndUtc!.Value);
+                    return LoginResult.InvalidCredentials();
                 }
 
-                lockedUser.RecordFailedLogin(
-                    utcNow,
-                    maxFailedAttempts: 5,
-                    lockoutDuration: TimeSpan.FromMinutes(15),
-                    windowDuration: TimeSpan.FromMinutes(15));
-
-                if (lockedUser.IsLockedOut(utcNow))
+                // Only apply failure count if user is active and password has not been changed concurrently
+                if (lockedUser.Status == UserStatus.Active &&
+                    string.Equals(lockedUser.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
                 {
-                    var lockoutAudit = SecurityAuditEvent.Create(
-                        SecurityAuditEventType.AccountLockedOut,
-                        utcNow,
-                        lockedUser.Id,
-                        sessionId: null,
-                        clientIp,
-                        SecurityAuditMetadata.Create(
-                            SecurityAuditMetadata.Reasons.AccountLocked,
-                            null,
-                            SecurityAuditMetadata.Actions.LockoutApplied));
+                    if (lockedUser.IsLockedOut(utcNow))
+                    {
+                        await failTx.RollbackAsync(cancellationToken);
+                        return LoginResult.LockedOut(lockedUser.LockoutEndUtc!.Value);
+                    }
 
-                    _dbContext.SecurityAuditEvents.Add(lockoutAudit);
+                    lockedUser.RecordFailedLogin(
+                        utcNow,
+                        maxFailedAttempts: 5,
+                        lockoutDuration: TimeSpan.FromMinutes(15),
+                        windowDuration: TimeSpan.FromMinutes(15));
+
+                    if (lockedUser.IsLockedOut(utcNow))
+                    {
+                        var lockoutAudit = SecurityAuditEvent.Create(
+                            SecurityAuditEventType.AccountLockedOut,
+                            utcNow,
+                            lockedUser.Id,
+                            sessionId: null,
+                            clientIp,
+                            SecurityAuditMetadata.Create(
+                                SecurityAuditMetadata.Reasons.AccountLocked,
+                                null,
+                                SecurityAuditMetadata.Actions.LockoutApplied));
+
+                        _dbContext.SecurityAuditEvents.Add(lockoutAudit);
+                    }
+                    else
+                    {
+                        var failAudit = SecurityAuditEvent.Create(
+                            SecurityAuditEventType.LoginFailed,
+                            utcNow,
+                            lockedUser.Id,
+                            sessionId: null,
+                            clientIp,
+                            SecurityAuditMetadata.Create(
+                                SecurityAuditMetadata.Reasons.InvalidCredentials,
+                                null,
+                                SecurityAuditMetadata.Actions.Deny));
+
+                        _dbContext.SecurityAuditEvents.Add(failAudit);
+                    }
+
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    await failTx.CommitAsync(cancellationToken);
+
+                    if (lockedUser.IsLockedOut(utcNow))
+                    {
+                        return LoginResult.LockedOut(lockedUser.LockoutEndUtc!.Value);
+                    }
                 }
                 else
                 {
-                    var failAudit = SecurityAuditEvent.Create(
-                        SecurityAuditEventType.LoginFailed,
-                        utcNow,
-                        lockedUser.Id,
-                        sessionId: null,
-                        clientIp,
-                        SecurityAuditMetadata.Create(
-                            SecurityAuditMetadata.Reasons.InvalidCredentials,
-                            null,
-                            SecurityAuditMetadata.Actions.Deny));
-
-                    _dbContext.SecurityAuditEvents.Add(failAudit);
+                    await failTx.RollbackAsync(cancellationToken);
                 }
 
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                await failTx.CommitAsync(cancellationToken);
-
-                if (lockedUser.IsLockedOut(utcNow))
-                {
-                    return LoginResult.LockedOut(lockedUser.LockoutEndUtc!.Value);
-                }
-            }
-            else
-            {
-                await failTx.RollbackAsync(cancellationToken);
-            }
-
-            return LoginResult.InvalidCredentials();
+                return LoginResult.InvalidCredentials();
+            });
         }
 
         // Precompute transparent password rehash OUTSIDE the database transaction and row lock
@@ -270,71 +274,75 @@ public sealed class AuthenticationService : IAuthenticationService
         }
 
         // 6. Verification Succeeded Workflow
-        await using var successTx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-
-        var user = await _dbContext.LockUserForUpdateAsync(snapshot.Id, cancellationToken);
-        if (user == null)
+        var successStrategy = _dbContext.Database.CreateExecutionStrategy();
+        return await successStrategy.ExecuteAsync(async () =>
         {
-            await successTx.RollbackAsync(cancellationToken);
-            return LoginResult.InvalidCredentials();
-        }
+            await using var successTx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
-        // Revalidate snapshot inside row lock to prevent stale credentials or concurrent mutations from applying rehash or issuing tokens
-        if (user.Status != UserStatus.Active ||
-            user.IsLockedOut(utcNow) ||
-            user.Version != snapshot.Version ||
-            !string.Equals(user.SecurityStamp, snapshot.SecurityStamp, StringComparison.Ordinal) ||
-            !string.Equals(user.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
-        {
-            await successTx.RollbackAsync(cancellationToken);
-            return LoginResult.InvalidCredentials();
-        }
+            var user = await _dbContext.LockUserForUpdateAsync(snapshot.Id, cancellationToken);
+            if (user == null)
+            {
+                await successTx.RollbackAsync(cancellationToken);
+                return LoginResult.InvalidCredentials();
+            }
 
-        // Reset failed login state
-        user.RecordSuccessfulLogin(utcNow);
+            // Revalidate snapshot inside row lock to prevent stale credentials or concurrent mutations from applying rehash or issuing tokens
+            if (user.Status != UserStatus.Active ||
+                user.IsLockedOut(utcNow) ||
+                user.Version != snapshot.Version ||
+                !string.Equals(user.SecurityStamp, snapshot.SecurityStamp, StringComparison.Ordinal) ||
+                !string.Equals(user.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
+            {
+                await successTx.RollbackAsync(cancellationToken);
+                return LoginResult.InvalidCredentials();
+            }
 
-        // Apply precomputed transparent rehash if required (preserves existing security stamp)
-        if (!string.IsNullOrWhiteSpace(precomputedRehash))
-        {
-            user.RehashPassword(precomputedRehash, utcNow);
-        }
+            // Reset failed login state
+            user.RecordSuccessfulLogin(utcNow);
 
-        // Create 30-day absolute session
-        var session = UserSession.Create(user.Id, utcNow, TimeSpan.FromDays(30));
-        _dbContext.UserSessions.Add(session);
+            // Apply precomputed transparent rehash if required (preserves existing security stamp)
+            if (!string.IsNullOrWhiteSpace(precomputedRehash))
+            {
+                user.RehashPassword(precomputedRehash, utcNow);
+            }
 
-        // Generate 7-day refresh token capped at session boundary
-        var generatedRefresh = _refreshTokenService.GenerateToken();
-        var refreshTokenEntity = _refreshTokenService.CreateRefreshTokenEntity(session, generatedRefresh.TokenHash, utcNow);
-        _dbContext.RefreshTokens.Add(refreshTokenEntity);
+            // Create 30-day absolute session
+            var session = UserSession.Create(user.Id, utcNow, TimeSpan.FromDays(30));
+            _dbContext.UserSessions.Add(session);
 
-        // Security audit
-        var loginAudit = SecurityAuditEvent.Create(
-            SecurityAuditEventType.LoginSuccess,
-            utcNow,
-            user.Id,
-            session.Id,
-            clientIp,
-            SecurityAuditMetadata.Create(
-                SecurityAuditMetadata.Reasons.StandardLogin,
-                SecurityAuditMetadata.Lineages.RootSession,
-                SecurityAuditMetadata.Actions.SessionCreated));
+            // Generate 7-day refresh token capped at session boundary
+            var generatedRefresh = _refreshTokenService.GenerateToken();
+            var refreshTokenEntity = _refreshTokenService.CreateRefreshTokenEntity(session, generatedRefresh.TokenHash, utcNow);
+            _dbContext.RefreshTokens.Add(refreshTokenEntity);
 
-        _dbContext.SecurityAuditEvents.Add(loginAudit);
+            // Security audit
+            var loginAudit = SecurityAuditEvent.Create(
+                SecurityAuditEventType.LoginSuccess,
+                utcNow,
+                user.Id,
+                session.Id,
+                clientIp,
+                SecurityAuditMetadata.Create(
+                    SecurityAuditMetadata.Reasons.StandardLogin,
+                    SecurityAuditMetadata.Lineages.RootSession,
+                    SecurityAuditMetadata.Actions.SessionCreated));
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        await successTx.CommitAsync(cancellationToken);
+            _dbContext.SecurityAuditEvents.Add(loginAudit);
 
-        // Issue 15-minute access JWT using committed session and current security stamp
-        var accessJwt = _jwtTokenService.GenerateAccessToken(user.Id, session.Id, user.SecurityStamp);
-        var tokenResult = new AuthTokenResult(
-            accessJwt.Token,
-            generatedRefresh.RawToken,
-            accessJwt.ExpiresAtUtc,
-            refreshTokenEntity.ExpiresAtUtc,
-            session.Id);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await successTx.CommitAsync(cancellationToken);
 
-        return LoginResult.Success(tokenResult);
+            // Issue 15-minute access JWT using committed session and current security stamp
+            var accessJwt = _jwtTokenService.GenerateAccessToken(user.Id, session.Id, user.SecurityStamp);
+            var tokenResult = new AuthTokenResult(
+                accessJwt.Token,
+                generatedRefresh.RawToken,
+                accessJwt.ExpiresAtUtc,
+                refreshTokenEntity.ExpiresAtUtc,
+                session.Id);
+
+            return LoginResult.Success(tokenResult);
+        });
     }
 
     /// <inheritdoc />
@@ -351,133 +359,137 @@ public sealed class AuthenticationService : IAuthenticationService
         var incomingHash = _refreshTokenService.HashToken(rawRefreshToken);
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
-        await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-
-        // 1. Locate refresh token record
-        var tokenRecord = await _dbContext.RefreshTokens
-            .AsNoTracking()
-            .Where(t => t.TokenHash == incomingHash)
-            .Select(t => new { t.Id, t.SessionId })
-            .SingleOrDefaultAsync(cancellationToken);
-
-        if (tokenRecord == null)
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            await tx.RollbackAsync(cancellationToken);
-            return RefreshTokenResult.Failed("Invalid refresh token.");
-        }
+            await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
-        // 2. Strict hierarchical lock ordering: Lock parent session first, then refresh token
-        var session = await _dbContext.LockSessionForUpdateAsync(tokenRecord.SessionId, cancellationToken);
-        var token = await _dbContext.LockRefreshTokenForUpdateAsync(tokenRecord.Id, cancellationToken);
+            // 1. Locate refresh token record
+            var tokenRecord = await _dbContext.RefreshTokens
+                .AsNoTracking()
+                .Where(t => t.TokenHash == incomingHash)
+                .Select(t => new { t.Id, t.SessionId })
+                .SingleOrDefaultAsync(cancellationToken);
 
-        if (session == null || token == null)
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return RefreshTokenResult.Failed("Session or token not found.");
-        }
-
-        // 3. MANDATORY CRITICAL PRECEDENCE: Check replay attack BEFORE ordinary revoked/expired checks
-        if (token.IsRotated)
-        {
-            // Replay detected: Revoke affected session family and active child tokens
-            if (!session.IsRevoked)
+            if (tokenRecord == null)
             {
-                session.Revoke(SessionRevocationReason.TokenReplayDetected, utcNow);
-                await _dbContext.RevokeActiveRefreshTokensForSessionAsync(session.Id, utcNow, cancellationToken);
-                _securityStampValidator.Invalidate(session.UserId);
+                await tx.RollbackAsync(cancellationToken);
+                return RefreshTokenResult.Failed("Invalid refresh token.");
             }
 
-            var replayAudit = SecurityAuditEvent.Create(
-                SecurityAuditEventType.TokenReplayDetected,
+            // 2. Strict hierarchical lock ordering: Lock parent session first, then refresh token
+            var session = await _dbContext.LockSessionForUpdateAsync(tokenRecord.SessionId, cancellationToken);
+            var token = await _dbContext.LockRefreshTokenForUpdateAsync(tokenRecord.Id, cancellationToken);
+
+            if (session == null || token == null)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return RefreshTokenResult.Failed("Session or token not found.");
+            }
+
+            // 3. MANDATORY CRITICAL PRECEDENCE: Check replay attack BEFORE ordinary revoked/expired checks
+            if (token.IsRotated)
+            {
+                // Replay detected: Revoke affected session family and active child tokens
+                if (!session.IsRevoked)
+                {
+                    session.Revoke(SessionRevocationReason.TokenReplayDetected, utcNow);
+                    await _dbContext.RevokeActiveRefreshTokensForSessionAsync(session.Id, utcNow, cancellationToken);
+                    _securityStampValidator.Invalidate(session.UserId);
+                }
+
+                var replayAudit = SecurityAuditEvent.Create(
+                    SecurityAuditEventType.TokenReplayDetected,
+                    utcNow,
+                    session.UserId,
+                    session.Id,
+                    clientIp,
+                    SecurityAuditMetadata.Create(
+                        SecurityAuditMetadata.Reasons.TokenReplay,
+                        SecurityAuditMetadata.Lineages.ReplayDetected,
+                        SecurityAuditMetadata.Actions.SessionRevoked));
+
+                _dbContext.SecurityAuditEvents.Add(replayAudit);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await tx.CommitAsync(cancellationToken);
+
+                return RefreshTokenResult.ReplayDetected();
+            }
+
+            // 4. Normal revocation and expiration checks
+            if (session.IsRevoked)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return RefreshTokenResult.Failed("Session has been revoked.");
+            }
+
+            if (session.IsExpired(utcNow))
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return RefreshTokenResult.Failed("Session has expired.");
+            }
+
+            if (token.IsRevoked)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return RefreshTokenResult.Failed("Refresh token has been revoked.");
+            }
+
+            if (token.IsExpired(utcNow))
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return RefreshTokenResult.Failed("Refresh token has expired.");
+            }
+
+            // 5. Query user state directly from database (do NOT rely on cache for refresh authorization)
+            var user = await _dbContext.Users
+                .AsNoTracking()
+                .Where(u => u.Id == session.UserId)
+                .Select(u => new { u.Id, u.Status, u.SecurityStamp })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            if (user == null || user.Status != UserStatus.Active)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return RefreshTokenResult.Failed("User account is inactive or disabled.");
+            }
+
+            // 6. Execute atomic rotation
+            session.RecordActivity(utcNow);
+
+            var newGenerated = _refreshTokenService.GenerateToken();
+            token.Rotate(newGenerated.TokenHash, utcNow);
+
+            var newRefreshToken = _refreshTokenService.CreateRefreshTokenEntity(session, newGenerated.TokenHash, utcNow);
+            _dbContext.RefreshTokens.Add(newRefreshToken);
+
+            var refreshAudit = SecurityAuditEvent.Create(
+                SecurityAuditEventType.TokenRefreshed,
                 utcNow,
                 session.UserId,
                 session.Id,
                 clientIp,
                 SecurityAuditMetadata.Create(
-                    SecurityAuditMetadata.Reasons.TokenReplay,
-                    SecurityAuditMetadata.Lineages.ReplayDetected,
-                    SecurityAuditMetadata.Actions.SessionRevoked));
+                    SecurityAuditMetadata.Reasons.TokenRefreshed,
+                    SecurityAuditMetadata.Lineages.SuccessorIssued,
+                    SecurityAuditMetadata.Actions.TokenRotated));
 
-            _dbContext.SecurityAuditEvents.Add(replayAudit);
+            _dbContext.SecurityAuditEvents.Add(refreshAudit);
+
             await _dbContext.SaveChangesAsync(cancellationToken);
             await tx.CommitAsync(cancellationToken);
 
-            return RefreshTokenResult.ReplayDetected();
-        }
+            // Issue new access JWT
+            var newAccessJwt = _jwtTokenService.GenerateAccessToken(user.Id, session.Id, user.SecurityStamp);
+            var tokenResult = new AuthTokenResult(
+                newAccessJwt.Token,
+                newGenerated.RawToken,
+                newAccessJwt.ExpiresAtUtc,
+                newRefreshToken.ExpiresAtUtc,
+                session.Id);
 
-        // 4. Normal revocation and expiration checks
-        if (session.IsRevoked)
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return RefreshTokenResult.Failed("Session has been revoked.");
-        }
-
-        if (session.IsExpired(utcNow))
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return RefreshTokenResult.Failed("Session has expired.");
-        }
-
-        if (token.IsRevoked)
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return RefreshTokenResult.Failed("Refresh token has been revoked.");
-        }
-
-        if (token.IsExpired(utcNow))
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return RefreshTokenResult.Failed("Refresh token has expired.");
-        }
-
-        // 5. Query user state directly from database (do NOT rely on cache for refresh authorization)
-        var user = await _dbContext.Users
-            .AsNoTracking()
-            .Where(u => u.Id == session.UserId)
-            .Select(u => new { u.Id, u.Status, u.SecurityStamp })
-            .SingleOrDefaultAsync(cancellationToken);
-
-        if (user == null || user.Status != UserStatus.Active)
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return RefreshTokenResult.Failed("User account is inactive or disabled.");
-        }
-
-        // 6. Execute atomic rotation
-        session.RecordActivity(utcNow);
-
-        var newGenerated = _refreshTokenService.GenerateToken();
-        token.Rotate(newGenerated.TokenHash, utcNow);
-
-        var newRefreshToken = _refreshTokenService.CreateRefreshTokenEntity(session, newGenerated.TokenHash, utcNow);
-        _dbContext.RefreshTokens.Add(newRefreshToken);
-
-        var refreshAudit = SecurityAuditEvent.Create(
-            SecurityAuditEventType.TokenRefreshed,
-            utcNow,
-            session.UserId,
-            session.Id,
-            clientIp,
-            SecurityAuditMetadata.Create(
-                SecurityAuditMetadata.Reasons.TokenRefreshed,
-                SecurityAuditMetadata.Lineages.SuccessorIssued,
-                SecurityAuditMetadata.Actions.TokenRotated));
-
-        _dbContext.SecurityAuditEvents.Add(refreshAudit);
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        await tx.CommitAsync(cancellationToken);
-
-        // Issue new access JWT
-        var newAccessJwt = _jwtTokenService.GenerateAccessToken(user.Id, session.Id, user.SecurityStamp);
-        var tokenResult = new AuthTokenResult(
-            newAccessJwt.Token,
-            newGenerated.RawToken,
-            newAccessJwt.ExpiresAtUtc,
-            newRefreshToken.ExpiresAtUtc,
-            session.Id);
-
-        return RefreshTokenResult.Success(tokenResult);
+            return RefreshTokenResult.Success(tokenResult);
+        });
     }
 
     /// <inheritdoc />
@@ -494,48 +506,52 @@ public sealed class AuthenticationService : IAuthenticationService
 
         var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
 
-        await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-
-        var session = await _dbContext.LockSessionForUpdateAsync(sessionId, cancellationToken);
-        if (session == null)
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            await tx.RollbackAsync(cancellationToken);
-            return LogoutResult.Success(); // Idempotent
-        }
+            await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
-        // Caller ownership verification
-        if (callerUserId.HasValue && callerUserId.Value != Guid.Empty && session.UserId != callerUserId.Value)
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return LogoutResult.Failed("Unauthorized: session belongs to another identity.");
-        }
+            var session = await _dbContext.LockSessionForUpdateAsync(sessionId, cancellationToken);
+            if (session == null)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return LogoutResult.Success(); // Idempotent
+            }
 
-        if (session.IsRevoked)
-        {
-            await tx.RollbackAsync(cancellationToken);
-            return LogoutResult.Success(); // Idempotent
-        }
+            // Caller ownership verification
+            if (callerUserId.HasValue && callerUserId.Value != Guid.Empty && session.UserId != callerUserId.Value)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return LogoutResult.Failed("Unauthorized: session belongs to another identity.");
+            }
 
-        session.Revoke(SessionRevocationReason.UserLogout, utcNow);
-        await _dbContext.RevokeActiveRefreshTokensForSessionAsync(session.Id, utcNow, cancellationToken);
-        _securityStampValidator.Invalidate(session.UserId);
+            if (session.IsRevoked)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return LogoutResult.Success(); // Idempotent
+            }
 
-        var audit = SecurityAuditEvent.Create(
-            SecurityAuditEventType.SessionRevoked,
-            utcNow,
-            session.UserId,
-            session.Id,
-            clientIp,
-            SecurityAuditMetadata.Create(
-                SecurityAuditMetadata.Reasons.UserLogout,
-                null,
-                SecurityAuditMetadata.Actions.SessionRevoked));
+            session.Revoke(SessionRevocationReason.UserLogout, utcNow);
+            await _dbContext.RevokeActiveRefreshTokensForSessionAsync(session.Id, utcNow, cancellationToken);
+            _securityStampValidator.Invalidate(session.UserId);
 
-        _dbContext.SecurityAuditEvents.Add(audit);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        await tx.CommitAsync(cancellationToken);
+            var audit = SecurityAuditEvent.Create(
+                SecurityAuditEventType.SessionRevoked,
+                utcNow,
+                session.UserId,
+                session.Id,
+                clientIp,
+                SecurityAuditMetadata.Create(
+                    SecurityAuditMetadata.Reasons.UserLogout,
+                    null,
+                    SecurityAuditMetadata.Actions.SessionRevoked));
 
-        return LogoutResult.Success();
+            _dbContext.SecurityAuditEvents.Add(audit);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+
+            return LogoutResult.Success();
+        });
     }
 
     /// <inheritdoc />
@@ -578,46 +594,50 @@ public sealed class AuthenticationService : IAuthenticationService
         var newPasswordHash = _passwordSecurityService.HashPassword(new User(), newPassword);
 
         // 4. Begin READ COMMITTED transaction and lock user
-        await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-
-        var user = await _dbContext.LockUserForUpdateAsync(userId, cancellationToken);
-        if (user == null || user.Status != UserStatus.Active || user.Version != snapshot.Version ||
-            !string.Equals(user.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            await tx.RollbackAsync(cancellationToken);
-            return PasswordMutationResult.Failed("User state has changed concurrently.");
-        }
+            await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
-        // Update password (automatically rotates security stamp and clears failed login attempts)
-        user.UpdatePassword(newPasswordHash, utcNow);
+            var user = await _dbContext.LockUserForUpdateAsync(userId, cancellationToken);
+            if (user == null || user.Status != UserStatus.Active || user.Version != snapshot.Version ||
+                !string.Equals(user.PasswordHash, snapshot.PasswordHash, StringComparison.Ordinal))
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return PasswordMutationResult.Failed("User state has changed concurrently.");
+            }
 
-        // Revoke all active sessions deterministically
-        var activeSessions = await _dbContext.LockActiveSessionsForUserAsync(userId, cancellationToken);
-        foreach (var sess in activeSessions)
-        {
-            sess.Revoke(SessionRevocationReason.PasswordChanged, utcNow);
-        }
+            // Update password (automatically rotates security stamp and clears failed login attempts)
+            user.UpdatePassword(newPasswordHash, utcNow);
 
-        await _dbContext.RevokeActiveRefreshTokensForUserAsync(userId, utcNow, cancellationToken);
-        _securityStampValidator.Invalidate(user.Id);
+            // Revoke all active sessions deterministically
+            var activeSessions = await _dbContext.LockActiveSessionsForUserAsync(userId, cancellationToken);
+            foreach (var sess in activeSessions)
+            {
+                sess.Revoke(SessionRevocationReason.PasswordChanged, utcNow);
+            }
 
-        var audit = SecurityAuditEvent.Create(
-            SecurityAuditEventType.PasswordChanged,
-            utcNow,
-            user.Id,
-            sessionId: null,
-            clientIp,
-            SecurityAuditMetadata.Create(
-                SecurityAuditMetadata.Reasons.PasswordChanged,
-                null,
-                SecurityAuditMetadata.Actions.SecurityStampRotated));
+            await _dbContext.RevokeActiveRefreshTokensForUserAsync(userId, utcNow, cancellationToken);
+            _securityStampValidator.Invalidate(user.Id);
 
-        _dbContext.SecurityAuditEvents.Add(audit);
+            var audit = SecurityAuditEvent.Create(
+                SecurityAuditEventType.PasswordChanged,
+                utcNow,
+                user.Id,
+                sessionId: null,
+                clientIp,
+                SecurityAuditMetadata.Create(
+                    SecurityAuditMetadata.Reasons.PasswordChanged,
+                    null,
+                    SecurityAuditMetadata.Actions.SecurityStampRotated));
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        await tx.CommitAsync(cancellationToken);
+            _dbContext.SecurityAuditEvents.Add(audit);
 
-        return PasswordMutationResult.Success();
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+
+            return PasswordMutationResult.Success();
+        });
     }
 
     /// <inheritdoc />
@@ -642,43 +662,47 @@ public sealed class AuthenticationService : IAuthenticationService
         // Hash new password outside lock
         var newPasswordHash = _passwordSecurityService.HashPassword(new User(), newPassword);
 
-        await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-
-        var user = await _dbContext.LockUserForUpdateAsync(userId, cancellationToken);
-        if (user == null || user.Status == UserStatus.Deactivated)
+        var resetStrategy = _dbContext.Database.CreateExecutionStrategy();
+        return await resetStrategy.ExecuteAsync(async () =>
         {
-            await tx.RollbackAsync(cancellationToken);
-            return PasswordMutationResult.Failed("User not found or permanently deactivated.");
-        }
+            await using var tx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
-        user.UpdatePassword(newPasswordHash, utcNow);
+            var user = await _dbContext.LockUserForUpdateAsync(userId, cancellationToken);
+            if (user == null || user.Status == UserStatus.Deactivated)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return PasswordMutationResult.Failed("User not found or permanently deactivated.");
+            }
 
-        var activeSessions = await _dbContext.LockActiveSessionsForUserAsync(userId, cancellationToken);
-        foreach (var sess in activeSessions)
-        {
-            sess.Revoke(SessionRevocationReason.PasswordChanged, utcNow);
-        }
+            user.UpdatePassword(newPasswordHash, utcNow);
 
-        await _dbContext.RevokeActiveRefreshTokensForUserAsync(userId, utcNow, cancellationToken);
-        _securityStampValidator.Invalidate(user.Id);
+            var activeSessions = await _dbContext.LockActiveSessionsForUserAsync(userId, cancellationToken);
+            foreach (var sess in activeSessions)
+            {
+                sess.Revoke(SessionRevocationReason.PasswordChanged, utcNow);
+            }
 
-        var audit = SecurityAuditEvent.Create(
-            SecurityAuditEventType.PasswordChanged,
-            utcNow,
-            user.Id,
-            sessionId: null,
-            clientIp,
-            SecurityAuditMetadata.Create(
-                SecurityAuditMetadata.Reasons.AdminAction,
-                null,
-                SecurityAuditMetadata.Actions.SecurityStampRotated));
+            await _dbContext.RevokeActiveRefreshTokensForUserAsync(userId, utcNow, cancellationToken);
+            _securityStampValidator.Invalidate(user.Id);
 
-        _dbContext.SecurityAuditEvents.Add(audit);
+            var audit = SecurityAuditEvent.Create(
+                SecurityAuditEventType.PasswordChanged,
+                utcNow,
+                user.Id,
+                sessionId: null,
+                clientIp,
+                SecurityAuditMetadata.Create(
+                    SecurityAuditMetadata.Reasons.AdminAction,
+                    null,
+                    SecurityAuditMetadata.Actions.SecurityStampRotated));
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        await tx.CommitAsync(cancellationToken);
+            _dbContext.SecurityAuditEvents.Add(audit);
 
-        return PasswordMutationResult.Success();
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+
+            return PasswordMutationResult.Success();
+        });
     }
 
     private static bool IsUniqueEmailViolation(DbUpdateException ex)
