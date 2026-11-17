@@ -2,7 +2,9 @@ namespace MaintenX.Api.Common.Security;
 
 using System.Net;
 using System.Threading.RateLimiting;
+using MaintenX.Api.Application.Auth;
 using MaintenX.Api.Application.Auth.Services;
+using MaintenX.Api.Common.Modules;
 using MaintenX.Api.Configuration;
 using MaintenX.Api.Domain.Auth;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -258,6 +260,9 @@ public static class SecurityServiceExtensions
 
         // 7. Authentication Application Services (FEAT-002 T5)
         services.AddScoped<IAuthenticationService, AuthenticationService>();
+
+        // 8. Authentication HTTP Presentation Module (FEAT-002 T6)
+        services.AddSingleton<IModule, AuthModule>();
 
         return services;
     }

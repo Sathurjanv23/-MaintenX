@@ -28,6 +28,10 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
 
         var (statusCode, title, detail) = exception switch
         {
+            BadHttpRequestException badHttpEx => (
+                badHttpEx.StatusCode,
+                "Bad Request",
+                badHttpEx.Message),
             ArgumentException argEx => (
                 (int)HttpStatusCode.BadRequest,
                 "Bad Request",
