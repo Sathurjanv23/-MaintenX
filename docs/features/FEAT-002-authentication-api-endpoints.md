@@ -34,7 +34,7 @@ All endpoints are mapped under the route group: `/api/v1/auth`.
 
 ### 1. User Registration (`POST /api/v1/auth/register`)
 - **Authorization**: Anonymous (`.AllowAnonymous()`)
-- **Rate Limiting**: Policy `"Auth.Registration"` (IP-based sliding window: 5 permits per 15 minutes)
+- **Rate Limiting**: Policy `"Auth.Registration"` (IP-based sliding window: 5 requests per 60 seconds)
 - **Request Body**: `RegisterRequest`
   ```json
   {
@@ -60,7 +60,7 @@ All endpoints are mapped under the route group: `/api/v1/auth`.
 
 ### 2. User Login (`POST /api/v1/auth/login`)
 - **Authorization**: Anonymous (`.AllowAnonymous()`)
-- **Rate Limiting**: Policy `"Auth.Login"` (IP-based sliding window: 10 permits per 15 minutes)
+- **Rate Limiting**: Policy `"Auth.Login"` (IP-based sliding window: 10 requests per 60 seconds)
 - **Request Body**: `LoginRequest`
   ```json
   {
@@ -92,7 +92,7 @@ All endpoints are mapped under the route group: `/api/v1/auth`.
 
 ### 3. Refresh Token Rotation (`POST /api/v1/auth/refresh`)
 - **Authorization**: Anonymous (`.AllowAnonymous()`)
-- **Rate Limiting**: Policy `"Auth.Refresh"` (IP-based sliding window: 30 permits per 15 minutes)
+- **Rate Limiting**: Policy `"Auth.Refresh"` (IP-based sliding window: 30 requests per 60 seconds)
 - **Request Body**: `RefreshTokenRequest`
   ```json
   {
@@ -150,8 +150,8 @@ All endpoints are mapped under the route group: `/api/v1/auth`.
   }
   ```
 - **Error Responses**:
-  - `400 Bad Request`: Validation failure (e.g. new password length outside 12-128 characters).
-  - `401 Unauthorized`: Invalid current credentials, unauthenticated request, or inactive account.
+  - `400 Bad Request`: Validation failure (e.g. new password length outside 12-128 characters) or incorrect current password (RFC 7807 Problem Details with message "Current password is incorrect.").
+  - `401 Unauthorized`: Unauthenticated request (missing, invalid, or expired JWT) or missing/malformed identity claims.
   - `429 Too Many Requests`: Rate limit exceeded.
 
 ---

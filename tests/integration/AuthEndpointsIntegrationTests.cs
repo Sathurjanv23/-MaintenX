@@ -563,6 +563,56 @@ public class AuthEndpointsIntegrationTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Logout_MalformedNonGuidSubClaim_Returns401AndLeavesSessionUnmodified()
+    {
+        var client = CreateUniqueClient();
+        var email = $"malformed_sub_{Guid.NewGuid():N}@maintenx.internal";
+        var password = "SecurePassword123!";
+
+        await client.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest(email, password));
+        var loginResp = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(email, password));
+        var loginBody = await loginResp.Content.ReadFromJsonAsync<LoginResponse>();
+        Assert.NotNull(loginBody);
+
+        var keyRing = _factory.Services.GetRequiredService<IJwtKeyRing>();
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var creds = keyRing.CreateSigningCredentials();
+
+        // Token with active valid sessionId ('sid'), but a malformed, non-GUID 'sub' claim
+        var descriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity([
+                new Claim(JwtRegisteredClaimNames.Sub, "invalid-non-guid-sub-string"),
+                new Claim("sid", loginBody.SessionId.ToString())
+            ]),
+            Issuer = "https://api.maintenx.internal",
+            Audience = "https://maintenx.internal",
+            Expires = DateTime.UtcNow.AddMinutes(15),
+            SigningCredentials = creds
+        };
+        var token = tokenHandler.CreateJwtSecurityToken(descriptor);
+        var tokenString = tokenHandler.WriteToken(token);
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", tokenString);
+
+        var response = await client.PostAsync("/api/v1/auth/logout", null);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal("Invalid or missing user identity claim.", doc.RootElement.GetProperty("detail").GetString());
+
+        // Verify session and refresh tokens remain active and unmodified in PostgreSQL
+        using var db = CreateDbContext();
+        var session = await db.UserSessions.SingleAsync(s => s.Id == loginBody.SessionId);
+        Assert.Null(session.RevokedAtUtc);
+        Assert.Null(session.RevocationReason);
+
+        var refreshTokens = await db.RefreshTokens.Where(rt => rt.SessionId == loginBody.SessionId).ToListAsync();
+        Assert.NotEmpty(refreshTokens);
+        Assert.All(refreshTokens, rt => Assert.False(rt.IsRevoked));
+    }
+
     // =========================================================================
     // 5. CHANGE PASSWORD TESTS
     // =========================================================================
