@@ -92,10 +92,25 @@ Commercial properties, universities, hospitals, and industrial facilities face s
     - Added `LastUsedAtUtc` session activity tracking and concurrency token management
     - Additive migration `20261114000000_AddAuthPersistenceEntities` and idempotent SQL script `0003_add_auth_persistence_entities.sql`
     - Complete test coverage: 262 unit tests and 95 integration tests passing against PostgreSQL 16
-  - [ ] **T4: Cryptography & Security Services** *(Planned)*
-  - [ ] **T5: Application Auth Services & Lifecycle** *(Planned)*
-  - [ ] **T6: Presentation Endpoints & OpenAPI Documentation** *(Planned)*
-  - [ ] **T7: End-to-End Automated Testing** *(Planned)*
+  - [x] **T4: Cryptography & Security Services**
+    - PBKDF2 credential hashing with ASP.NET Core compatibility and dummy verification timing mitigations
+    - Cryptographic JWT access token issuance with active key signing and key ring rotation
+    - Single-use 64-byte cryptographic refresh token generator and SHA-256 token hashing
+    - In-memory 60-second cached security stamp validation with PostgreSQL fallback and stamp invalidation
+  - [x] **T5: Application Auth Services & Lifecycle**
+    - Core application service (`IAuthenticationService`) orchestrating registration, login, refresh rotation, logout, and password change
+    - PostgreSQL row-level locking (`SELECT ... FOR UPDATE`) with deterministic ordering preventing session/token concurrency races
+    - Precomputed password rehash outside row locks and single-flight refresh token replay attack detection
+    - Durable audit event committing with zero PII leakage and EF Core resilient execution strategy wrapping
+  - [x] **T6: Presentation Endpoints & OpenAPI Documentation**
+    - Minimal API presentation module (`AuthModule : IModule`) exposing versioned endpoints under `/api/v1/auth`
+    - Sensitive value redaction on DTO contracts (`RegisterRequest`, `LoginRequest`, `RefreshTokenRequest`, etc.)
+    - Universal 401 Unauthorized mapping for all credential and lockout failures to prevent account enumeration
+    - Direct claims derivation (`sub`, `sid`) on authenticated routes with administrative password reset explicitly deferred
+  - [x] **T7: End-to-End Automated Testing**
+    - Comprehensive multi-step automated lifecycle tests (`AuthEndToEndLifecycleTests`) against containerized PostgreSQL 16
+    - Stateful workflow verification: registration, authentication, protected route probe, token refresh rotation, and logout
+    - Multi-session invalidation on password change, refresh replay family revocation, brute-force lockout recovery, and untrusted proxy isolation
   - [ ] **T8: Architecture Documentation & ADR-0003** *(Planned)*
 - [ ] **FEAT-003: Multi-Tenancy** *(Planned)*
 - [ ] **FEAT-004: Role-Based Access Control** *(Planned)*
