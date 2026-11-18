@@ -69,9 +69,7 @@ Commercial properties, universities, hospitals, and industrial facilities face s
   - Generated code-first migrations (`20261113000000_InitialDatabaseFoundation`, `20261113000001_HardenTenantSlugConstraints`) and idempotent SQL scripts
   - Implemented isolated real PostgreSQL integration tests (`DatabaseFoundationIntegrationTests` DB-001 through DB-019) executing in dedicated disposable databases (`maintenx_test_*`) protected by strict fail-closed safety guards, host allowlisting, explicit provisioning opt-in (`TestDatabase:AllowProvisioning`), genuine administrator (`postgres`) vs. restricted application (`maintenx_app`) role separation, automatic teardown on setup failure, and automated migration upgrade testing (`DB014`)
   - Authored comprehensive [Database Architecture Documentation](docs/architecture/database-design.md) and [ADR-0002](docs/adr/ADR-0002-postgresql-efcore.md)
-
-### Feature Roadmap *(Clearly Marked as Planned)*
-- [ ] **FEAT-002: Authentication** *(In Progress)*
+- [x] **FEAT-002: Authentication**
   - [x] **T1: Security Configuration & Proxy Hardening**
     - Strongly typed `JwtOptions` and fail-fast startup validator `JwtOptionsValidator` enforcing &ge; 256-bit Base64 keys, required issuer/audience, and `kid` headers
     - Cryptographic key ring (`IJwtKeyRing`) supporting active key signing and verification ring for zero-downtime key rotation
@@ -111,7 +109,12 @@ Commercial properties, universities, hospitals, and industrial facilities face s
     - Comprehensive multi-step automated lifecycle tests (`AuthEndToEndLifecycleTests`) against containerized PostgreSQL 16
     - Stateful workflow verification: registration, authentication, protected route probe, token refresh rotation, and logout
     - Multi-session invalidation on password change, refresh replay family revocation, brute-force lockout recovery, and untrusted proxy isolation
-  - [ ] **T8: Architecture Documentation & ADR-0003** *(Planned)*
+  - [x] **T8: Architecture Documentation & ADR-0003**
+    - Authored comprehensive [ADR-0003: Authentication, Session Management, and Security Architecture](docs/adr/ADR-0003-authentication-security-architecture.md)
+    - Updated [System Architecture Overview](docs/architecture/overview.md) with dedicated authentication and security architecture section, sequence diagrams, and concurrency specifications
+    - Documented threat model, timing attack mitigations, single-use refresh token rotation, pessimistic PostgreSQL row locking, and future Redis scale-out considerations
+
+### Feature Roadmap *(Clearly Marked as Planned)*
 - [ ] **FEAT-003: Multi-Tenancy** *(Planned)*
 - [ ] **FEAT-004: Role-Based Access Control** *(Planned)*
 - [ ] **FEAT-005: Next.js Authentication UI** *(Planned)*

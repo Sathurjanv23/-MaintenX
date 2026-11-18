@@ -111,7 +111,67 @@ MaintenX enforces a **Shared Database, Separate Schemas / Row-Level Tenant Isola
 
 ---
 
-## 7. Development & Deployment Topology
+## 7. Authentication & Security Architecture
+
+The authentication subsystem is implemented as a clean, decoupled bounded context in `MaintenX.Modules.Authentication` governing identity, credentials, sessions, and security audits. For comprehensive rationale, alternatives, and threat mitigations, see [ADR-0003: Authentication, Session Management, and Security Architecture](../adr/ADR-0003-authentication-security-architecture.md).
+
+### 7.1 Layer Responsibilities
+
+- **Presentation Layer (`AuthModule`)**: Minimal API endpoints mapped under `/api/v1/auth/` (`register`, `login`, `refresh`, `logout`, `change-password`). Enforces IP-based sliding-window rate limits (Registration: 5/min, Login: 10/min, Refresh: 30/min), redacts sensitive input on DTOs, and returns uniform HTTP `401 Unauthorized` for all credential/lockout failures.
+- **Application Layer (`IAuthenticationService`)**: Orchestrates authentication workflows within explicit EF Core execution strategy transactions, executes PBKDF2 password hashing outside database locks, enforces replay-precedence session family revocation, and coordinates security stamp validation.
+- **Domain Layer (`User`, `UserSession`, `RefreshToken`, `SecurityAuditEvent`)**: Encapsulates invariants including 15-minute rolling lockout (after 5 failed attempts), single-use refresh token lineage (`ReplacedByTokenHash`), 30-day absolute session expiration, and structured non-PII audit logging.
+- **Infrastructure Layer (`EfUserSecurityStampStore`, `MaintenXDbContext`, `JwtTokenService`, `JwtKeyRing`)**: Provides PostgreSQL persistence, parameterized row-level locking (`SELECT ... FOR UPDATE`), HMAC-SHA256 JWT generation with 24-hour retired key retention, and scoped security stamp validation.
+
+### 7.2 Token Refresh & Security Stamp Validation Workflow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Web / Mobile Client
+    participant API as API Host / AuthModule
+    participant Cache as MemoryCache (Stamp TTL: 60s)
+    participant AuthSvc as AuthenticationService
+    participant DB as PostgreSQL 16 (platform schema)
+
+    Note over Client,API: 1. Token Refresh Flow (Pessimistic Row Lock)
+    Client->>API: POST /api/v1/auth/refresh { refreshToken }
+    API->>AuthSvc: RefreshTokensAsync(rawToken, clientIp)
+    AuthSvc->>DB: BEGIN Transaction (ReadCommitted)
+    AuthSvc->>DB: SELECT * FROM user_sessions WHERE id = @id FOR UPDATE
+    AuthSvc->>DB: Query & Validate Refresh Token (Replay Check First)
+    AuthSvc->>DB: Revoke Old Token, Insert New Token Hash, Update Session
+    AuthSvc->>DB: Insert SecurityAuditEvent (TokenRefreshed)
+    AuthSvc->>DB: COMMIT Transaction
+    AuthSvc-->>API: Issue new 15-min JWT + 7-day Refresh Token
+    API-->>Client: 200 OK { accessToken, refreshToken, expiresIn }
+
+    Note over Client,API: 2. Authenticated Request & Security Stamp Validation
+    Client->>API: GET /api/v1/protected-resource (Authorization: Bearer <JWT>)
+    API->>API: Validate JWT Signature (IJwtKeyRing)
+    API->>Cache: Check Cached Security Stamp (userId)
+    alt Cache Miss
+        API->>DB: Query User Status & Security Stamp
+        DB-->>API: Return User Record
+        API->>Cache: Cache Stamp (60s Absolute Expiration)
+    end
+    alt Stamp Valid & User Active
+        API-->>Client: Process Request & Return 200 OK
+    else Stamp Mismatched or User Suspended
+        API-->>Client: 401 Unauthorized
+    end
+```
+
+### 7.3 Concurrency Control & Replay Protection
+
+- **Pessimistic Row Locking**: All refresh token exchanges lock the parent session record via `SELECT ... FOR UPDATE` within a `READ COMMITTED` transaction. Hierarchical lock acquisition strictly follows $\text{User} \rightarrow \text{UserSession} \rightarrow \text{RefreshToken}$ to eliminate database deadlock risk.
+- **Immediate Replay Revocation**: When an already-rotated refresh token hash is presented, replay attack logic immediately revokes the entire parent session (`TokenReplayDetected`), cancels all active child refresh tokens, and writes a permanent security audit record.
+- **Security Stamp Invalidation**: Rotating a user's security stamp (triggered by password change, administrative reset, suspension, reactivation, or deactivation) invalidates all existing JWT access tokens upon local cache eviction or within 60 seconds across all nodes. Single session logout revokes the specific session and its refresh tokens without mutating the global security stamp.
+- **Audit Persistence vs Retention**: Security audit events are persisted append-only in `platform.security_audit_events` with JSONB metadata. Database persistence is durable and non-cascading; automated event retention purges are governed by operational archival policies rather than runtime deletion jobs.
+- **Known Multi-Instance Scaling Considerations**: In-memory rate limiting and the 60-second in-memory security stamp cache operate per-node. Horizontal clustering across multiple containers will introduce Redis for distributed sliding-window rate limiting and distributed stamp invalidation (see [ADR-0003 Section 5](../adr/ADR-0003-authentication-security-architecture.md#5-multi-instance-operational-limitations--future-scale-out)).
+
+---
+
+## 8. Development & Deployment Topology
 
 - **Local Development**:
   - PostgreSQL container running via Docker Compose (`docker-compose up -d postgres`)
