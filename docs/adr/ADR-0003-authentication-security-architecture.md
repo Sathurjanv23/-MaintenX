@@ -111,13 +111,13 @@ To maintain strict historical fidelity: the specific architectural decisions det
   - **Lifetime**: 7 days (`RefreshTokenLifetimeDays = 7`).
   - **Format**: 64-byte cryptographically secure random value (`RandomNumberGenerator`).
   - **Storage**: Raw refresh tokens are **never stored** in the database. Only their cryptographic SHA-256 hash (`byte[32]`) is persisted in `platform.refresh_tokens`.
-  - **Transport**: Transferred exclusively via JSON request/response bodies (`RefreshTokenRequest` / `AuthTokenResult`). This completely eliminates Cross-Site Request Forgery (CSRF) vulnerabilities inherent to browser cookies and provides a uniform, platform-agnostic transport for mobile apps (`Flutter`) and web SPAs (`Next.js`).
+  - **Transport**: Transferred exclusively via JSON request/response bodies (`RefreshTokenRequest` / `AuthTokenResult`). By avoiding ambient credential transmission (such as automatic cookie attachment on cross-origin requests) and requiring explicit JSON payload submission, this mitigates traditional cookie-based Cross-Site Request Forgery (CSRF) vulnerabilities while providing a uniform, platform-agnostic transport for mobile apps (`Flutter`) and web SPAs (`Next.js`).
 - **Sessions (`UserSession`)**:
   - **Absolute Expiration**: 30 days (`SessionAbsoluteLifetimeDays = 30`).
   - Refresh token expirations are strictly bounded by their parent session's `ExpiresAtUtc`. A refresh token cannot extend beyond the 30-day session lifespan.
 
 #### 4.2 Credential Protection & Timing-Attack Defense
-- **Hashing Algorithm**: PBKDF2 with HMAC-SHA512, 100,000 iterations, and a 128-bit salt via ASP.NET Core's `IPasswordHasher<User>`.
+- **Hashing Algorithm**: PBKDF2 with HMAC-SHA256 (ASP.NET Core Identity V3 format), 100,000 iterations, 128-bit salt, and 256-bit subkey via ASP.NET Core's default `PasswordHasher<User>`.
 - **Transparent Rehash**: When `IPasswordSecurityService.VerifyHashedPassword` signals `SuccessRehashNeeded` (e.g. when iteration counts or hashing algorithms are upgraded), the new hash is precomputed *outside* database locks and updated via `User.RehashPassword(...)`. Transparent rehash updates the password hash without rotating the security stamp, ensuring active user sessions are not prematurely terminated.
 - **Timing Discrepancy Elimination**:
   - During registration, candidate password hashing occurs *before* querying candidate email existence in PostgreSQL, ensuring duplicate registration attempts exhibit identical computational latency to new registrations.
@@ -173,7 +173,7 @@ To maintain strict historical fidelity: the specific architectural decisions det
 
 #### 4.6 Rate Limiting & Account Lockout
 - **Presentation Layer Rate Limiting**:
-  Implemented via ASP.NET Core `RateLimiter` middleware using IP-based sliding windows:
+  Implemented via ASP.NET Core `RateLimiter` middleware using IP-based sliding-window partitions (`SlidingWindowRateLimiterOptions`) for tracked client IPs, with a 1-permit fixed-window fallback for unresolvable or memory-overflow partitions:
   - `Auth.Registration`: 5 requests per 60 seconds per client IP.
   - `Auth.Login`: 10 requests per 60 seconds per client IP.
   - `Auth.Refresh`: 30 requests per 60 seconds per client IP.
@@ -194,8 +194,8 @@ To maintain strict historical fidelity: the specific architectural decisions det
 - **Persistence vs. Retention Policy**:
   - Audit records persist indefinitely in PostgreSQL by default. An automated data retention purge job (e.g. archiving events older than 1 year to cold storage) is an operational concern and is not implemented in the application codebase.
   - In contrast, cryptographic retired keys in `JwtKeyRing` enforce an automated 24-hour retention window.
-- **PII & Secret Redaction**:
-  - The audit system strictly prohibits recording passwords, password hashes, raw tokens, token hashes, or unverified candidate email addresses.
+- **Audit Data & Sensitive Secret Redaction**:
+  - The audit system persists validated client IP addresses (IPv4 or IPv6) for security forensics and operational tracking, but strictly excludes sensitive authentication secrets: plaintext passwords, password hashes, raw tokens, token hashes, or unverified candidate email addresses.
 
 #### 4.8 Reverse Proxy & Forwarded Header Trust
 - Configured via `ForwardedHeadersOptions` for `X-Forwarded-For` and `X-Forwarded-Proto`.
@@ -258,7 +258,7 @@ flowchart TD
 | **Credential Stuffing** | Automated submission of leaked credential dumps | PBKDF2 high iteration computation cost + aggressive IP sliding window limits. |
 | **Account Enumeration** | Timing discrepancy or differential HTTP errors | Password hashing executed before user check on registration; dummy hashing on login; uniform 401 response for all login failures; generic registration response. |
 | **Token Theft & Replay** | Intercepted refresh token reused by attacker | Single-use rotation; SHA-256 token hashing; immediate session family revocation on replay detection. |
-| **Session Hijacking** | Access token theft from compromised client | Short 15-minute JWT lifetime; security stamp rotation capability; JSON body transport eliminating CSRF. |
+| **Session Hijacking** | Access token theft from compromised client | Short 15-minute JWT lifetime; security stamp rotation capability; JSON body transport avoiding ambient credential transmission (cookie CSRF mitigation). |
 | **Race Conditions** | Concurrent refresh token exchange | Parameterized PostgreSQL row locks (`SELECT ... FOR UPDATE`) in `READ COMMITTED` transactions. |
 | **IP Spoofing** | Forged `X-Forwarded-For` headers bypassing limits | Default proxies cleared; strict production allowlist validation via `TrustedProxyOptionsValidator`. |
 
@@ -269,7 +269,7 @@ flowchart TD
 #### Positive Consequences:
 - **Zero Framework Lock-in**: Clean domain models (`User`, `UserSession`, `RefreshToken`, `SecurityAuditEvent`) free from ASP.NET Core Identity tables and dependencies.
 - **Cross-Platform Compatibility**: JSON body refresh token exchange functions seamlessly across Flutter mobile apps and Next.js web frontends.
-- **Audit Durability**: Complete non-cascading security audit trail capturing all authentication events without leaking sensitive credentials or PII.
+- **Audit Durability**: Complete non-cascading security audit trail capturing all authentication events with client IP for security forensics, without leaking sensitive credentials or secrets.
 - **Predictable Concurrency**: Relational row locks prevent session duplication and token branching without introducing distributed lock managers.
 
 #### Negative Consequences & Mitigations:
