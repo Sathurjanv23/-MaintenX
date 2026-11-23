@@ -152,7 +152,7 @@ public sealed class TenantResolutionService : ITenantResolutionService
             return TenantResolutionResult.Failure(
                 StatusCodes.Status403Forbidden,
                 "Forbidden",
-                "The requested tenant organization is currently suspended.");
+                "Access to the requested tenant organization is denied.");
         }
 
         if (tenant.Status == TenantStatus.Deactivated)
@@ -161,7 +161,7 @@ public sealed class TenantResolutionService : ITenantResolutionService
             return TenantResolutionResult.Failure(
                 StatusCodes.Status403Forbidden,
                 "Forbidden",
-                "The requested tenant organization has been deactivated.");
+                "Access to the requested tenant organization is denied.");
         }
 
         if (tenant.Status != TenantStatus.Active)
@@ -170,12 +170,13 @@ public sealed class TenantResolutionService : ITenantResolutionService
             return TenantResolutionResult.Failure(
                 StatusCodes.Status403Forbidden,
                 "Forbidden",
-                "The requested tenant organization has not completed initial onboarding.");
+                "Access to the requested tenant organization is denied.");
         }
 
         // 9. Query and Validate User Membership for this exact Tenant
         var memberships = await _dbContext.TenantMemberships
             .AsNoTracking()
+            .IgnoreQueryFilters()
             .Where(m => m.TenantId == tenant.Id && m.UserId == userId)
             .ToListAsync(cancellationToken);
 
@@ -191,7 +192,7 @@ public sealed class TenantResolutionService : ITenantResolutionService
                 return TenantResolutionResult.Failure(
                     StatusCodes.Status403Forbidden,
                     "Forbidden",
-                    "User membership in the requested tenant organization has been revoked.");
+                    "Access to the requested tenant organization is denied.");
             }
 
             // User has no membership record for this tenant at all
@@ -209,7 +210,7 @@ public sealed class TenantResolutionService : ITenantResolutionService
             return TenantResolutionResult.Failure(
                 StatusCodes.Status403Forbidden,
                 "Forbidden",
-                "User membership in the requested tenant organization is pending activation.");
+                "Access to the requested tenant organization is denied.");
         }
 
         if (currentMembership.Status == TenantMembershipStatus.Suspended)
@@ -218,7 +219,7 @@ public sealed class TenantResolutionService : ITenantResolutionService
             return TenantResolutionResult.Failure(
                 StatusCodes.Status403Forbidden,
                 "Forbidden",
-                "User membership in the requested tenant organization is currently suspended.");
+                "Access to the requested tenant organization is denied.");
         }
 
         if (currentMembership.Status != TenantMembershipStatus.Active)
@@ -227,7 +228,7 @@ public sealed class TenantResolutionService : ITenantResolutionService
             return TenantResolutionResult.Failure(
                 StatusCodes.Status403Forbidden,
                 "Forbidden",
-                "User membership in the requested tenant organization is not active.");
+                "Access to the requested tenant organization is denied.");
         }
 
         // 10. Success: Construct Immutable, Verified Tenant Context

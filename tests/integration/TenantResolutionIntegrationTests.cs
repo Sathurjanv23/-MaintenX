@@ -102,7 +102,9 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
             .UseNpgsql(_isolatedConnectionString)
             .Options;
 
-        return new MaintenXDbContext(options);
+        var context = new MaintenXDbContext(options);
+        context.CreatePrivilegedTenantBypassScope("resolution-test-fixture");
+        return context;
     }
 
     private static int _ipCounter = 200;
@@ -305,7 +307,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Contains("pending", doc.RootElement.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]
@@ -321,7 +323,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Contains("suspended", doc.RootElement.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]
@@ -345,7 +347,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Contains("revoked", doc.RootElement.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]
@@ -361,7 +363,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Contains("suspended", doc.RootElement.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]
@@ -377,7 +379,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Contains("deactivated", doc.RootElement.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]
@@ -393,7 +395,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Contains("onboarding", doc.RootElement.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]
