@@ -73,7 +73,9 @@ public class TenantPersistenceIntegrationTests : IAsyncLifetime
             .UseNpgsql(_isolatedConnectionString)
             .Options;
 
-        return new MaintenXDbContext(options);
+        var context = new MaintenXDbContext(options);
+        context.CreatePrivilegedTenantBypassScope("persistence-testing");
+        return context;
     }
 
     private async Task<(Tenant Tenant, User User)> CreateTenantAndUserAsync(string suffix)
