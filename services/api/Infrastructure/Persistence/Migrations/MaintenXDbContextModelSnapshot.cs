@@ -311,6 +311,74 @@ namespace MaintenX.Api.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("MaintenX.Api.Domain.Tenants.TenantMembership", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<DateTime?>("DeactivatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deactivated_at_utc");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("role");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tenant_memberships");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_tenant_memberships_status");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_tenant_memberships_tenant_id");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_tenant_memberships_user_id");
+
+                    b.HasIndex("TenantId", "UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tenant_memberships_tenant_id_user_id_non_revoked")
+                        .HasFilter("status != 'Revoked'");
+
+                    b.ToTable("tenant_memberships", "platform", t =>
+                        {
+                            t.HasCheckConstraint("ck_tenant_memberships_role", "role IN ('Owner', 'Administrator', 'Member')");
+
+                            t.HasCheckConstraint("ck_tenant_memberships_status", "status IN ('Pending', 'Active', 'Suspended', 'Revoked')");
+                        });
+                });
+
             modelBuilder.Entity("MaintenX.Api.Domain.Auth.RefreshToken", b =>
                 {
                     b.HasOne("MaintenX.Api.Domain.Auth.UserSession", null)
@@ -329,6 +397,23 @@ namespace MaintenX.Api.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_user_sessions_users_user_id");
+                });
+
+            modelBuilder.Entity("MaintenX.Api.Domain.Tenants.TenantMembership", b =>
+                {
+                    b.HasOne("MaintenX.Api.Domain.Tenants.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_tenant_memberships_tenants_tenant_id");
+
+                    b.HasOne("MaintenX.Api.Domain.Auth.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_tenant_memberships_users_user_id");
                 });
 #pragma warning restore 612, 618
         }
