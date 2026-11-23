@@ -1,3 +1,4 @@
+using MaintenX.Api.Application.Tenancy;
 using MaintenX.Api.Common.Errors;
 using MaintenX.Api.Common.Health;
 using MaintenX.Api.Common.Modules;
@@ -23,11 +24,14 @@ builder.Services.AddMaintenXSecurity(builder.Configuration, builder.Environment)
 // 4. PostgreSQL Persistence (EF Core 10)
 builder.Services.AddMaintenXPersistence(builder.Configuration);
 
-// 5. Health Checks
+// 5. Multi-Tenancy Infrastructure (Verified Context Resolution)
+builder.Services.AddMaintenXTenancy();
+
+// 6. Health Checks
 builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("postgresql", tags: new[] { "ready", "db" });
 
-// 6. OpenAPI / Swagger Documentation
+// 7. OpenAPI / Swagger Documentation
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -70,7 +74,7 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// 7. CORS policy for frontend clients (Web Next.js dev server & Mobile clients)
+// 8. CORS policy for frontend clients (Web Next.js dev server & Mobile clients)
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowLocalClients", policy =>
@@ -104,6 +108,9 @@ app.UseCors("AllowLocalClients");
 
 // 2. Authoritative MaintenX Security Pipeline (Rate Limiting -> Authentication -> Authorization)
 app.UseMaintenXSecurity();
+
+// 3. Multi-Tenancy Resolution (Resolves verified request-scoped ITenantContext after authentication)
+app.UseTenantResolution();
 
 // -----------------------------------------------------------------------------
 // Health Check Endpoints (Anonymous & Excluded from Rate Limiting)
