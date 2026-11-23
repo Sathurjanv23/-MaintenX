@@ -114,4 +114,106 @@ public sealed partial class Tenant
             Version = 1
         };
     }
+
+    /// <summary>
+    /// Indicates whether the tenant organization is currently active and fully operational.
+    /// </summary>
+    public bool IsActive => Status == TenantStatus.Active;
+
+    /// <summary>
+    /// Indicates whether the tenant organization can accept new memberships (active or in onboarding).
+    /// </summary>
+    public bool CanAcceptMembers => Status == TenantStatus.Active || Status == TenantStatus.PendingOnboarding;
+
+    /// <summary>
+    /// Activates the tenant organization from PendingOnboarding or Suspended status.
+    /// </summary>
+    /// <param name="utcNow">UTC timestamp of activation.</param>
+    /// <exception cref="InvalidOperationException">Thrown if the tenant is permanently deactivated.</exception>
+    public void Activate(DateTime utcNow)
+    {
+        if (Status == TenantStatus.Deactivated)
+        {
+            throw new InvalidOperationException($"Cannot activate tenant '{Id}' because it is permanently deactivated.");
+        }
+
+        if (Status == TenantStatus.Active)
+        {
+            return; // Idempotent
+        }
+
+        Status = TenantStatus.Active;
+        UpdatedAtUtc = utcNow;
+        Version++;
+    }
+
+    /// <summary>
+    /// Temporarily suspends operations and access for the tenant organization.
+    /// </summary>
+    /// <param name="utcNow">UTC timestamp of suspension.</param>
+    /// <exception cref="InvalidOperationException">Thrown if tenant is deactivated or not yet onboarded.</exception>
+    public void Suspend(DateTime utcNow)
+    {
+        if (Status == TenantStatus.Deactivated)
+        {
+            throw new InvalidOperationException($"Cannot suspend tenant '{Id}' because it is permanently deactivated.");
+        }
+
+        if (Status == TenantStatus.PendingOnboarding)
+        {
+            throw new InvalidOperationException($"Cannot suspend tenant '{Id}' because it is in PendingOnboarding status and has not completed initial onboarding.");
+        }
+
+        if (Status == TenantStatus.Suspended)
+        {
+            return; // Idempotent
+        }
+
+        Status = TenantStatus.Suspended;
+        UpdatedAtUtc = utcNow;
+        Version++;
+    }
+
+    /// <summary>
+    /// Permanently deactivates the tenant organization. Deactivation is a terminal lifecycle state.
+    /// </summary>
+    /// <param name="utcNow">UTC timestamp of deactivation.</param>
+    public void Deactivate(DateTime utcNow)
+    {
+        if (Status == TenantStatus.Deactivated)
+        {
+            return; // Idempotent
+        }
+
+        Status = TenantStatus.Deactivated;
+        UpdatedAtUtc = utcNow;
+        Version++;
+    }
+
+    /// <summary>
+    /// Updates the display name of the tenant organization.
+    /// </summary>
+    /// <param name="displayName">New display name.</param>
+    /// <param name="utcNow">UTC timestamp of the update.</param>
+    /// <exception cref="ArgumentException">Thrown if displayName is null or whitespace.</exception>
+    /// <exception cref="InvalidOperationException">Thrown if tenant is deactivated.</exception>
+    public void UpdateDisplayName(string displayName, DateTime utcNow)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
+
+        if (Status == TenantStatus.Deactivated)
+        {
+            throw new InvalidOperationException($"Cannot update display name for deactivated tenant '{Id}'.");
+        }
+
+        var trimmed = displayName.Trim();
+        if (DisplayName == trimmed)
+        {
+            return; // Idempotent
+        }
+
+        DisplayName = trimmed;
+        UpdatedAtUtc = utcNow;
+        Version++;
+    }
 }
