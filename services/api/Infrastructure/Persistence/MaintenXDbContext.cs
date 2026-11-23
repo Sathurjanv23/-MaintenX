@@ -22,6 +22,11 @@ public class MaintenXDbContext : DbContext
     public DbSet<Tenant> Tenants => Set<Tenant>();
 
     /// <summary>
+    /// Tenant memberships database set.
+    /// </summary>
+    public DbSet<TenantMembership> TenantMemberships => Set<TenantMembership>();
+
+    /// <summary>
     /// Authentication users identity database set.
     /// </summary>
     public DbSet<User> Users => Set<User>();

@@ -365,4 +365,83 @@ public class TenantMembershipTests
         Assert.Throws<ArgumentException>(() =>
             membership.ChangeRole((TenantMembershipRole)999, DateTime.UtcNow));
     }
+
+    [Fact]
+    public void Revoke_FollowedByReinvitation_CreatesNewDistinctMembershipWhilePreservingRevokedHistory()
+    {
+        var initialCreateTime = DateTime.UtcNow.AddDays(-10);
+        var initialMembership = TenantMembership.Create(
+            ValidTenantId,
+            ValidUserId,
+            TenantMembershipRole.Member,
+            TenantMembershipStatus.Active,
+            initialCreateTime);
+
+        var revokeTime = DateTime.UtcNow.AddDays(-5);
+        initialMembership.Revoke(revokeTime);
+
+        Assert.Equal(TenantMembershipStatus.Revoked, initialMembership.Status);
+        Assert.False(initialMembership.IsActive);
+        Assert.Equal(revokeTime, initialMembership.DeactivatedAtUtc);
+        Assert.Equal(revokeTime, initialMembership.UpdatedAtUtc);
+
+        // Re-invitation generates a brand new membership aggregate
+        var reinviteTime = DateTime.UtcNow;
+        var newMembership = TenantMembership.Create(
+            ValidTenantId,
+            ValidUserId,
+            TenantMembershipRole.Administrator,
+            TenantMembershipStatus.Pending,
+            reinviteTime);
+
+        // Verify brand new membership lifecycle
+        Assert.NotEqual(initialMembership.Id, newMembership.Id);
+        Assert.Equal(ValidTenantId, newMembership.TenantId);
+        Assert.Equal(ValidUserId, newMembership.UserId);
+        Assert.Equal(TenantMembershipRole.Administrator, newMembership.Role);
+        Assert.Equal(TenantMembershipStatus.Pending, newMembership.Status);
+        Assert.False(newMembership.IsActive);
+        Assert.Null(newMembership.DeactivatedAtUtc);
+        Assert.Equal(reinviteTime, newMembership.CreatedAtUtc);
+        Assert.Equal(reinviteTime, newMembership.UpdatedAtUtc);
+        Assert.Equal(1, newMembership.Version);
+
+        // Activate new membership
+        var activateTime = DateTime.UtcNow.AddMinutes(5);
+        newMembership.Activate(activateTime);
+        Assert.True(newMembership.IsActive);
+        Assert.Equal(TenantMembershipStatus.Active, newMembership.Status);
+        Assert.Equal(2, newMembership.Version);
+
+        // Verify original revoked membership remains unmodified and terminal
+        Assert.Equal(TenantMembershipStatus.Revoked, initialMembership.Status);
+        Assert.False(initialMembership.IsActive);
+        Assert.Equal(revokeTime, initialMembership.DeactivatedAtUtc);
+    }
+
+    [Fact]
+    public void RevokedMembership_CannotBeReactivated_EnforcesTerminalState()
+    {
+        var membership = TenantMembership.Create(
+            ValidTenantId,
+            ValidUserId,
+            TenantMembershipRole.Member);
+
+        membership.Revoke(DateTime.UtcNow);
+
+        // Terminal enforcement: cannot activate
+        var exActivate = Assert.Throws<InvalidOperationException>(() =>
+            membership.Activate(DateTime.UtcNow));
+        Assert.Contains("revoked", exActivate.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Terminal enforcement: cannot suspend
+        var exSuspend = Assert.Throws<InvalidOperationException>(() =>
+            membership.Suspend(DateTime.UtcNow));
+        Assert.Contains("revoked", exSuspend.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Terminal enforcement: cannot change role
+        var exRole = Assert.Throws<InvalidOperationException>(() =>
+            membership.ChangeRole(TenantMembershipRole.Owner, DateTime.UtcNow));
+        Assert.Contains("revoked", exRole.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }
