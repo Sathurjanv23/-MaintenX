@@ -3,6 +3,7 @@ namespace MaintenX.Api.Application.Tenancy;
 using MaintenX.Api.Application.Tenancy.Context;
 using MaintenX.Api.Application.Tenancy.Middleware;
 using MaintenX.Api.Application.Tenancy.Resolution;
+using MaintenX.Api.Application.Tenancy.Services;
 using MaintenX.Api.Common.Modules;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
@@ -40,7 +41,10 @@ public static class TenancyServiceExtensions
         // 3. Scoped Tenant Resolution Service
         services.AddScoped<ITenantResolutionService, TenantResolutionService>();
 
-        // 4. Tenancy HTTP Presentation Module
+        // 4. Scoped Tenant Application Service
+        services.AddScoped<ITenantService, TenantService>();
+
+        // 5. Tenancy HTTP Presentation Module
         services.AddSingleton<IModule, TenancyModule>();
 
         return services;
