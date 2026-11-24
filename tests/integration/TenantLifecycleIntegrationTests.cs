@@ -7,6 +7,7 @@ using MaintenX.Api.Domain.Auth;
 using MaintenX.Api.Domain.Tenants;
 using MaintenX.Api.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -358,5 +359,142 @@ public class TenantLifecycleIntegrationTests : IAsyncLifetime
         Assert.False(updResult.IsSuccess);
         Assert.Equal(409, updResult.StatusCode);
         Assert.Equal("DEACTIVATED_TENANT", updResult.ErrorCode);
+    }
+
+    // --- Scenario: Durable Audit Persistence & Atomicity (Security Remediation) ---
+
+    [Fact]
+    public async Task Lifecycle_Activate_PersistsAuditEventAtomically()
+    {
+        var (tenant, _, _, _, stranger) = await SeedTenantWithUsersAsync("audit-act", "Audit Activate", TenantStatus.PendingOnboarding);
+        using var context = CreateContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+        var adminActor = TenantActorContext.PlatformAdmin(stranger.Id);
+
+        var result = await service.ActivateTenantAsync(tenant.Id, adminActor);
+        Assert.True(result.IsSuccess);
+
+        // Verify audit record in platform.tenant_audit_events
+        using var verifyContext = CreateContext();
+        var audit = await verifyContext.TenantAuditEvents
+            .AsNoTracking()
+            .SingleOrDefaultAsync(a => a.TenantId == tenant.Id && a.Action == "TenantActivated");
+
+        Assert.NotNull(audit);
+        Assert.Equal(tenant.Id, audit.TenantId);
+        Assert.Equal(adminActor.UserId, audit.ActorUserId);
+        Assert.Equal("TenantActivated", audit.Action);
+        Assert.Equal("PendingOnboarding", audit.PreviousStatus);
+        Assert.Equal("Active", audit.NewStatus);
+        Assert.Null(audit.Reason);
+        Assert.True(audit.CreatedAtUtc > DateTime.UtcNow.AddMinutes(-1));
+    }
+
+    [Fact]
+    public async Task Lifecycle_Suspend_PersistsAuditEventAtomically()
+    {
+        var (tenant, _, _, _, stranger) = await SeedTenantWithUsersAsync("audit-susp", "Audit Suspend", TenantStatus.Active);
+        using var context = CreateContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+        var adminActor = TenantActorContext.PlatformAdmin(stranger.Id);
+
+        var reason = "Billing compliance review triggered.";
+        var result = await service.SuspendTenantAsync(tenant.Id, reason, adminActor);
+        Assert.True(result.IsSuccess);
+
+        // Verify audit record in platform.tenant_audit_events
+        using var verifyContext = CreateContext();
+        var audit = await verifyContext.TenantAuditEvents
+            .AsNoTracking()
+            .SingleOrDefaultAsync(a => a.TenantId == tenant.Id && a.Action == "TenantSuspended");
+
+        Assert.NotNull(audit);
+        Assert.Equal(tenant.Id, audit.TenantId);
+        Assert.Equal(adminActor.UserId, audit.ActorUserId);
+        Assert.Equal("TenantSuspended", audit.Action);
+        Assert.Equal("Active", audit.PreviousStatus);
+        Assert.Equal("Suspended", audit.NewStatus);
+        Assert.Equal(reason, audit.Reason);
+        Assert.True(audit.CreatedAtUtc > DateTime.UtcNow.AddMinutes(-1));
+    }
+
+    [Fact]
+    public async Task Lifecycle_IdempotentCall_DoesNotPersistDuplicateAuditEventOrBumpVersion()
+    {
+        var (tenant, _, _, _, stranger) = await SeedTenantWithUsersAsync("audit-idemp", "Audit Idempotent", TenantStatus.Active);
+        using var context = CreateContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+        var adminActor = TenantActorContext.PlatformAdmin(stranger.Id);
+
+        // Initial state check
+        using (var initialCheck = CreateContext())
+        {
+            var initialTenant = await initialCheck.Tenants.AsNoTracking().FirstAsync(t => t.Id == tenant.Id);
+            Assert.Equal(1, initialTenant.Version);
+            var initialAuditCount = await initialCheck.TenantAuditEvents.CountAsync(a => a.TenantId == tenant.Id);
+            Assert.Equal(0, initialAuditCount);
+        }
+
+        // Call Activate on already Active tenant
+        var idempotentResult = await service.ActivateTenantAsync(tenant.Id, adminActor);
+        Assert.True(idempotentResult.IsSuccess);
+
+        // Verify no duplicate audit row and no version increment
+        using (var verifyDb = CreateContext())
+        {
+            var reloaded = await verifyDb.Tenants.AsNoTracking().FirstAsync(t => t.Id == tenant.Id);
+            Assert.Equal(1, reloaded.Version);
+            var auditCount = await verifyDb.TenantAuditEvents.CountAsync(a => a.TenantId == tenant.Id);
+            Assert.Equal(0, auditCount);
+        }
+    }
+
+    [Fact]
+    public async Task Lifecycle_AuditFailure_RollsBackTenantMutation()
+    {
+        var (tenant, _, _, _, stranger) = await SeedTenantWithUsersAsync("audit-rollback", "Audit Rollback", TenantStatus.PendingOnboarding);
+
+        // Create DbContext with failing interceptor on TenantAuditEvent saving
+        var options = new DbContextOptionsBuilder<MaintenXDbContext>()
+            .UseNpgsql(_isolatedConnectionString)
+            .AddInterceptors(new FailingAuditInterceptor())
+            .Options;
+
+        using var failingContext = new MaintenXDbContext(options);
+        var service = new TenantService(failingContext, TimeProvider.System, NullLogger<TenantService>.Instance);
+        var adminActor = TenantActorContext.PlatformAdmin(stranger.Id);
+
+        // Act & Assert: Exception is thrown due to simulated audit failure
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ActivateTenantAsync(tenant.Id, adminActor));
+
+        // Assert: Tenant in DB was rolled back - remains PendingOnboarding, version unchanged, no audit row
+        using var verifyDb = CreateContext();
+        var reloaded = await verifyDb.Tenants.AsNoTracking().FirstAsync(t => t.Id == tenant.Id);
+        Assert.Equal(TenantStatus.PendingOnboarding, reloaded.Status);
+        Assert.Equal(1, reloaded.Version);
+
+        var auditExists = await verifyDb.TenantAuditEvents.AnyAsync(a => a.TenantId == tenant.Id);
+        Assert.False(auditExists);
+    }
+
+    private sealed class FailingAuditInterceptor : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context is not null)
+            {
+                var hasAudit = eventData.Context.ChangeTracker.Entries<TenantAuditEvent>().Any();
+                if (hasAudit)
+                {
+                    throw new InvalidOperationException("Simulated audit persistence failure for atomic rollback verification.");
+                }
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 }

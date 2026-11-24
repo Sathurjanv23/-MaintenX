@@ -433,38 +433,80 @@ public sealed class TenantService : ITenantService
             return TenantLifecycleResult.Forbidden("Platform administrator privileges are required to perform tenant lifecycle operations.");
         }
 
-        var tenant = await _dbContext.Tenants
-            .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-
-        if (tenant is null)
-        {
-            return TenantLifecycleResult.NotFound();
-        }
-
-        if (tenant.Status == TenantStatus.Deactivated)
-        {
-            _logger.LogWarning("Tenant activation rejected: tenant {TenantId} is permanently deactivated.", tenantId);
-            return TenantLifecycleResult.InvalidState($"Cannot activate tenant '{tenantId}' because it is permanently deactivated.");
-        }
-
-        if (tenant.Status == TenantStatus.Active)
-        {
-            _logger.LogInformation("Tenant activation idempotent: tenant {TenantId} is already active.", tenantId);
-            return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
-        }
-
-        var previousStatus = tenant.Status;
-        var now = _timeProvider.GetUtcNow().UtcDateTime;
-        tenant.Activate(now);
-
         try
         {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            _logger.LogInformation(
-                "Security Audit: TenantActivated [ActorUserId={ActorUserId}, TenantId={TenantId}, PreviousStatus={PreviousStatus}, NewStatus={NewStatus}, Timestamp={Timestamp:O}]",
-                effectiveActor.UserId, tenant.Id, previousStatus, tenant.Status, now);
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                var isOuterTx = _dbContext.Database.CurrentTransaction is null;
+                var tx = isOuterTx ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken) : null;
+                try
+                {
+                    var tenant = await _dbContext.Tenants
+                        .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
 
-            return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                    if (tenant is null)
+                    {
+                        return TenantLifecycleResult.NotFound();
+                    }
+
+                    if (tenant.Status == TenantStatus.Deactivated)
+                    {
+                        _logger.LogWarning("Tenant activation rejected: tenant {TenantId} is permanently deactivated.", tenantId);
+                        return TenantLifecycleResult.InvalidState($"Cannot activate tenant '{tenantId}' because it is permanently deactivated.");
+                    }
+
+                    if (tenant.Status == TenantStatus.Active)
+                    {
+                        _logger.LogInformation("Tenant activation idempotent: tenant {TenantId} is already active.", tenantId);
+                        return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                    }
+
+                    var previousStatus = tenant.Status;
+                    var now = _timeProvider.GetUtcNow().UtcDateTime;
+
+                    tenant.Activate(now);
+
+                    var auditEvent = TenantAuditEvent.Create(
+                        tenant.Id,
+                        effectiveActor.UserId,
+                        "TenantActivated",
+                        previousStatus.ToString(),
+                        tenant.Status.ToString(),
+                        null,
+                        now);
+
+                    _dbContext.TenantAuditEvents.Add(auditEvent);
+
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+
+                    if (tx is not null)
+                    {
+                        await tx.CommitAsync(cancellationToken);
+                    }
+
+                    _logger.LogInformation(
+                        "Security Audit: TenantActivated [ActorUserId={ActorUserId}, TenantId={TenantId}, PreviousStatus={PreviousStatus}, NewStatus={NewStatus}, Timestamp={Timestamp:O}]",
+                        effectiveActor.UserId, tenant.Id, previousStatus, tenant.Status, now);
+
+                    return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                }
+                catch
+                {
+                    if (isOuterTx)
+                    {
+                        _dbContext.ChangeTracker.Clear();
+                    }
+                    throw;
+                }
+                finally
+                {
+                    if (tx is not null)
+                    {
+                        await tx.DisposeAsync();
+                    }
+                }
+            });
         }
         catch (DbUpdateConcurrencyException ex)
         {
@@ -513,44 +555,86 @@ public sealed class TenantService : ITenantService
             return TenantLifecycleResult.Forbidden("Platform administrator privileges are required to perform tenant lifecycle operations.");
         }
 
-        var tenant = await _dbContext.Tenants
-            .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-
-        if (tenant is null)
-        {
-            return TenantLifecycleResult.NotFound();
-        }
-
-        if (tenant.Status == TenantStatus.Deactivated)
-        {
-            _logger.LogWarning("Tenant suspension rejected: tenant {TenantId} is permanently deactivated.", tenantId);
-            return TenantLifecycleResult.InvalidState($"Cannot suspend tenant '{tenantId}' because it is permanently deactivated.");
-        }
-
-        if (tenant.Status == TenantStatus.PendingOnboarding)
-        {
-            _logger.LogWarning("Tenant suspension rejected: tenant {TenantId} has not completed onboarding.", tenantId);
-            return TenantLifecycleResult.InvalidState($"Cannot suspend tenant '{tenantId}' because it is in PendingOnboarding status and has not completed initial onboarding.");
-        }
-
-        if (tenant.Status == TenantStatus.Suspended)
-        {
-            _logger.LogInformation("Tenant suspension idempotent: tenant {TenantId} is already suspended.", tenantId);
-            return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
-        }
-
-        var previousStatus = tenant.Status;
-        var now = _timeProvider.GetUtcNow().UtcDateTime;
-        tenant.Suspend(now);
-
         try
         {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            _logger.LogInformation(
-                "Security Audit: TenantSuspended [ActorUserId={ActorUserId}, TenantId={TenantId}, Reason='{Reason}', PreviousStatus={PreviousStatus}, NewStatus={NewStatus}, Timestamp={Timestamp:O}]",
-                effectiveActor.UserId, tenant.Id, trimmedReason, previousStatus, tenant.Status, now);
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                var isOuterTx = _dbContext.Database.CurrentTransaction is null;
+                var tx = isOuterTx ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken) : null;
+                try
+                {
+                    var tenant = await _dbContext.Tenants
+                        .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
 
-            return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                    if (tenant is null)
+                    {
+                        return TenantLifecycleResult.NotFound();
+                    }
+
+                    if (tenant.Status == TenantStatus.Deactivated)
+                    {
+                        _logger.LogWarning("Tenant suspension rejected: tenant {TenantId} is permanently deactivated.", tenantId);
+                        return TenantLifecycleResult.InvalidState($"Cannot suspend tenant '{tenantId}' because it is permanently deactivated.");
+                    }
+
+                    if (tenant.Status == TenantStatus.PendingOnboarding)
+                    {
+                        _logger.LogWarning("Tenant suspension rejected: tenant {TenantId} has not completed onboarding.", tenantId);
+                        return TenantLifecycleResult.InvalidState($"Cannot suspend tenant '{tenantId}' because it is in PendingOnboarding status and has not completed initial onboarding.");
+                    }
+
+                    if (tenant.Status == TenantStatus.Suspended)
+                    {
+                        _logger.LogInformation("Tenant suspension idempotent: tenant {TenantId} is already suspended.", tenantId);
+                        return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                    }
+
+                    var previousStatus = tenant.Status;
+                    var now = _timeProvider.GetUtcNow().UtcDateTime;
+
+                    tenant.Suspend(now);
+
+                    var auditEvent = TenantAuditEvent.Create(
+                        tenant.Id,
+                        effectiveActor.UserId,
+                        "TenantSuspended",
+                        previousStatus.ToString(),
+                        tenant.Status.ToString(),
+                        trimmedReason,
+                        now);
+
+                    _dbContext.TenantAuditEvents.Add(auditEvent);
+
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+
+                    if (tx is not null)
+                    {
+                        await tx.CommitAsync(cancellationToken);
+                    }
+
+                    _logger.LogInformation(
+                        "Security Audit: TenantSuspended [ActorUserId={ActorUserId}, TenantId={TenantId}, Reason='{Reason}', PreviousStatus={PreviousStatus}, NewStatus={NewStatus}, Timestamp={Timestamp:O}]",
+                        effectiveActor.UserId, tenant.Id, trimmedReason, previousStatus, tenant.Status, now);
+
+                    return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                }
+                catch
+                {
+                    if (isOuterTx)
+                    {
+                        _dbContext.ChangeTracker.Clear();
+                    }
+                    throw;
+                }
+                finally
+                {
+                    if (tx is not null)
+                    {
+                        await tx.DisposeAsync();
+                    }
+                }
+            });
         }
         catch (DbUpdateConcurrencyException ex)
         {
@@ -599,32 +683,74 @@ public sealed class TenantService : ITenantService
             return TenantLifecycleResult.Forbidden("Platform administrator privileges are required to perform tenant lifecycle operations.");
         }
 
-        var tenant = await _dbContext.Tenants
-            .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-
-        if (tenant is null)
-        {
-            return TenantLifecycleResult.NotFound();
-        }
-
-        if (tenant.Status == TenantStatus.Deactivated)
-        {
-            _logger.LogInformation("Tenant deactivation idempotent: tenant {TenantId} is already deactivated.", tenantId);
-            return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
-        }
-
-        var previousStatus = tenant.Status;
-        var now = _timeProvider.GetUtcNow().UtcDateTime;
-        tenant.Deactivate(now);
-
         try
         {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            _logger.LogInformation(
-                "Security Audit: TenantDeactivated [ActorUserId={ActorUserId}, TenantId={TenantId}, Reason='{Reason}', PreviousStatus={PreviousStatus}, NewStatus={NewStatus}, Timestamp={Timestamp:O}]",
-                effectiveActor.UserId, tenant.Id, trimmedReason, previousStatus, tenant.Status, now);
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                var isOuterTx = _dbContext.Database.CurrentTransaction is null;
+                var tx = isOuterTx ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken) : null;
+                try
+                {
+                    var tenant = await _dbContext.Tenants
+                        .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
 
-            return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                    if (tenant is null)
+                    {
+                        return TenantLifecycleResult.NotFound();
+                    }
+
+                    if (tenant.Status == TenantStatus.Deactivated)
+                    {
+                        _logger.LogInformation("Tenant deactivation idempotent: tenant {TenantId} is already deactivated.", tenantId);
+                        return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                    }
+
+                    var previousStatus = tenant.Status;
+                    var now = _timeProvider.GetUtcNow().UtcDateTime;
+
+                    tenant.Deactivate(now);
+
+                    var auditEvent = TenantAuditEvent.Create(
+                        tenant.Id,
+                        effectiveActor.UserId,
+                        "TenantDeactivated",
+                        previousStatus.ToString(),
+                        tenant.Status.ToString(),
+                        trimmedReason,
+                        now);
+
+                    _dbContext.TenantAuditEvents.Add(auditEvent);
+
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+
+                    if (tx is not null)
+                    {
+                        await tx.CommitAsync(cancellationToken);
+                    }
+
+                    _logger.LogInformation(
+                        "Security Audit: TenantDeactivated [ActorUserId={ActorUserId}, TenantId={TenantId}, Reason='{Reason}', PreviousStatus={PreviousStatus}, NewStatus={NewStatus}, Timestamp={Timestamp:O}]",
+                        effectiveActor.UserId, tenant.Id, trimmedReason, previousStatus, tenant.Status, now);
+
+                    return TenantLifecycleResult.Success(new TenantLifecycleResponse(tenant.Id, tenant.Status.ToString(), tenant.UpdatedAtUtc));
+                }
+                catch
+                {
+                    if (isOuterTx)
+                    {
+                        _dbContext.ChangeTracker.Clear();
+                    }
+                    throw;
+                }
+                finally
+                {
+                    if (tx is not null)
+                    {
+                        await tx.DisposeAsync();
+                    }
+                }
+            });
         }
         catch (DbUpdateConcurrencyException ex)
         {

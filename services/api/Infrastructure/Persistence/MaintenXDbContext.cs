@@ -56,6 +56,11 @@ public class MaintenXDbContext : DbContext
     public DbSet<SecurityAuditEvent> SecurityAuditEvents => Set<SecurityAuditEvent>();
 
     /// <summary>
+    /// Tenant audit events database set for durable lifecycle and administrative tracking.
+    /// </summary>
+    public DbSet<TenantAuditEvent> TenantAuditEvents => Set<TenantAuditEvent>();
+
+    /// <summary>
     /// Currently resolved tenant identifier from the request scope, or null if uncontexted.
     /// </summary>
     public Guid? CurrentTenantId => _tenantContextAccessor?.Current?.TenantId;
