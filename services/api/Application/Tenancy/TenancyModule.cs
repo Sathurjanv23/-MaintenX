@@ -23,11 +23,12 @@ public sealed class TenancyModule : IModule
     /// <inheritdoc />
     public IEndpointRouteBuilder MapEndpoints(IEndpointRouteBuilder endpoints)
     {
-        var group = endpoints.MapGroup("/api/v1/tenancy")
+        // 1. Diagnostic and active tenant verification group
+        var tenancyGroup = endpoints.MapGroup("/api/v1/tenancy")
             .WithTags("Tenancy");
 
         // Verification endpoint reflecting the active verified tenant context
-        group.MapGet("/current", (ITenantContext tenantContext) =>
+        tenancyGroup.MapGet("/current", (ITenantContext tenantContext) =>
         {
             return Results.Ok(new CurrentTenantContextResponse(
                 tenantContext.TenantId,
@@ -49,6 +50,12 @@ public sealed class TenancyModule : IModule
         .ProducesProblem(StatusCodes.Status401Unauthorized)
         .ProducesProblem(StatusCodes.Status403Forbidden)
         .ProducesProblem(StatusCodes.Status404NotFound);
+
+        // 2. Canonical tenant management route group (/api/v1/tenants)
+        // Endpoints will be mounted here in Tasks 3.6.2, 3.6.3, and 3.6.4.
+        var tenantsGroup = endpoints.MapGroup("/api/v1/tenants")
+            .WithTags("Tenants")
+            .RequireAuthorization();
 
         return endpoints;
     }
