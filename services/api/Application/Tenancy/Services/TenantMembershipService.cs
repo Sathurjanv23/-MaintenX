@@ -84,6 +84,8 @@ public sealed class TenantMembershipService : ITenantMembershipService
                             t.DisplayName,
                             m.Role.ToString(),
                             m.Status.ToString(),
+                            t.Status.ToString(),
+                            m.Status == TenantMembershipStatus.Active && t.Status == TenantStatus.Active,
                             m.CreatedAtUtc);
 
             return await query.ToListAsync(cancellationToken);

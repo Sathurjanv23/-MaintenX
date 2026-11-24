@@ -130,6 +130,8 @@ public class TenantContractsAndModelsTests
             "Tenant Display Name",
             "Owner",
             "Active",
+            "Active",
+            true,
             created);
 
         Assert.Equal(membershipId, response.MembershipId);
@@ -138,6 +140,8 @@ public class TenantContractsAndModelsTests
         Assert.Equal("Tenant Display Name", response.TenantDisplayName);
         Assert.Equal("Owner", response.Role);
         Assert.Equal("Active", response.Status);
+        Assert.Equal("Active", response.TenantStatus);
+        Assert.True(response.IsSelectable);
         Assert.Equal(created, response.CreatedAtUtc);
     }
 
