@@ -10,7 +10,7 @@ using MaintenX.Api.Application.Tenancy.Models;
 public interface ITenantMembershipService
 {
     /// <summary>
-    /// Retrieves all tenant memberships held by the specified user across organizations.
+    /// Retrieves all tenant memberships held by the specified user across organizations using request-scoped caller context.
     /// Safe for workspace switching without leaking other users' memberships.
     /// </summary>
     /// <param name="userId">Identifier of the authenticated user.</param>
@@ -21,7 +21,20 @@ public interface ITenantMembershipService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Retrieves a user's membership within a specific tenant organization.
+    /// Retrieves all tenant memberships held by the specified user across organizations with explicit verified actor context.
+    /// Safe for workspace switching without leaking other users' memberships.
+    /// </summary>
+    /// <param name="userId">Identifier of the authenticated user.</param>
+    /// <param name="actor">Verified actor context of the caller.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Read-only list of the caller's tenant memberships.</returns>
+    Task<IReadOnlyList<UserTenantMembershipResponse>> GetUserMembershipsAsync(
+        Guid userId,
+        TenantActorContext? actor,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves a user's membership within a specific tenant organization using request-scoped caller context.
     /// </summary>
     /// <param name="tenantId">Target tenant organization identifier.</param>
     /// <param name="userId">Target user identifier.</param>
@@ -30,5 +43,19 @@ public interface ITenantMembershipService
     Task<TenantMembershipResult> GetMembershipAsync(
         Guid tenantId,
         Guid userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves a user's membership within a specific tenant organization with explicit verified actor context.
+    /// </summary>
+    /// <param name="tenantId">Target tenant organization identifier.</param>
+    /// <param name="userId">Target user identifier.</param>
+    /// <param name="actor">Verified actor context of the caller.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A <see cref="TenantMembershipResult"/> with membership details or not-found outcome.</returns>
+    Task<TenantMembershipResult> GetMembershipAsync(
+        Guid tenantId,
+        Guid userId,
+        TenantActorContext? actor,
         CancellationToken cancellationToken = default);
 }

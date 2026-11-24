@@ -44,7 +44,10 @@ public static class TenancyServiceExtensions
         // 4. Scoped Tenant Application Service
         services.AddScoped<ITenantService, TenantService>();
 
-        // 5. Tenancy HTTP Presentation Module
+        // 5. Scoped Tenant Membership Application Service
+        services.AddScoped<ITenantMembershipService, TenantMembershipService>();
+
+        // 6. Tenancy HTTP Presentation Module
         services.AddSingleton<IModule, TenancyModule>();
 
         return services;
