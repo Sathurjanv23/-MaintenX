@@ -237,8 +237,12 @@ public class MaintenXDbContext : DbContext
             else if (entry.State == EntityState.Modified)
             {
                 entry.Entity.UpdatedAtUtc = now;
-                // Increment version token for optimistic concurrency tracking
-                entry.Entity.Version += 1;
+                var versionProp = entry.Property(t => t.Version);
+                if (!versionProp.IsModified || (long)versionProp.CurrentValue! == (long)versionProp.OriginalValue!)
+                {
+                    // Increment version token for optimistic concurrency tracking if domain logic hasn't already bumped it
+                    entry.Entity.Version += 1;
+                }
             }
         }
     }
