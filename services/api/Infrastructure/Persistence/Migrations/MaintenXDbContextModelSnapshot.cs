@@ -311,6 +311,62 @@ namespace MaintenX.Api.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("MaintenX.Api.Domain.Tenants.TenantAuditEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("NewStatus")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("new_status");
+
+                    b.Property<string>("PreviousStatus")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("previous_status");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tenant_audit_events");
+
+                    b.HasIndex("ActorUserId")
+                        .HasDatabaseName("ix_tenant_audit_events_actor_user_id");
+
+                    b.HasIndex("CreatedAtUtc")
+                        .HasDatabaseName("ix_tenant_audit_events_created_at_utc");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_tenant_audit_events_tenant_id");
+
+                    b.ToTable("tenant_audit_events", "platform");
+                });
+
             modelBuilder.Entity("MaintenX.Api.Domain.Tenants.TenantMembership", b =>
                 {
                     b.Property<Guid>("Id")
