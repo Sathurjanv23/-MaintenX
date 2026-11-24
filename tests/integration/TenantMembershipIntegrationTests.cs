@@ -134,6 +134,8 @@ public class TenantMembershipIntegrationTests : IAsyncLifetime
         Assert.Equal("Acme Discovery", item.TenantDisplayName);
         Assert.Equal("Member", item.Role);
         Assert.Equal("Active", item.Status);
+        Assert.Equal("Active", item.TenantStatus);
+        Assert.True(item.IsSelectable);
     }
 
     // --- Scenario 2: User with multiple organizations receives only their authorized records ordered deterministically ---
@@ -361,6 +363,8 @@ public class TenantMembershipIntegrationTests : IAsyncLifetime
         Assert.Equal(tenant.Id, item.TenantId);
         Assert.Equal("Owner", item.Role);
         Assert.Equal("Active", item.Status);
+        Assert.Equal("PendingOnboarding", item.TenantStatus);
+        Assert.False(item.IsSelectable);
     }
 
     // --- Scenario 11: Revoked membership is excluded from discovery ---

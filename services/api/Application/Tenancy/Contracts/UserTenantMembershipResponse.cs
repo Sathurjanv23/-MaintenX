@@ -10,6 +10,8 @@ namespace MaintenX.Api.Application.Tenancy.Contracts;
 /// <param name="TenantDisplayName">Display name of the organization.</param>
 /// <param name="Role">Organizational role held by the authenticated user in this tenant.</param>
 /// <param name="Status">Status of the membership in this tenant organization.</param>
+/// <param name="TenantStatus">Lifecycle status of the tenant organization.</param>
+/// <param name="IsSelectable">Whether this workspace can be actively selected for tenancy session context (both membership and tenant are Active).</param>
 /// <param name="CreatedAtUtc">UTC timestamp when the membership was created.</param>
 public sealed record UserTenantMembershipResponse(
     Guid MembershipId,
@@ -18,4 +20,6 @@ public sealed record UserTenantMembershipResponse(
     string TenantDisplayName,
     string Role,
     string Status,
+    string TenantStatus,
+    bool IsSelectable,
     DateTime CreatedAtUtc);

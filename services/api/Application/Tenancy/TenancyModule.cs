@@ -117,6 +117,45 @@ public sealed class TenancyModule : IModule
         .ProducesProblem(StatusCodes.Status409Conflict)
         .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
+        // 2.2 Workspace Membership Discovery Endpoint (FEAT-003 Task 3.6.3)
+        tenantsGroup.MapGet("/me", async (
+            ITenantActorResolver actorResolver,
+            ITenantMembershipService membershipService,
+            HttpContext httpContext,
+            CancellationToken cancellationToken) =>
+        {
+            // Resolve server-side verified, trusted actor context (tenant-neutral: requireActiveTenantContext: false)
+            var actorResolution = await actorResolver.ResolveActorAsync(
+                httpContext.User,
+                requireActiveTenantContext: false,
+                cancellationToken);
+
+            if (!actorResolution.IsSuccess || actorResolution.Actor is null)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    actorResolution.StatusCode,
+                    actorResolution.ErrorTitle ?? "Unauthorized",
+                    actorResolution.ErrorDetail ?? "Access denied.",
+                    "UNAUTHORIZED");
+            }
+
+            var callerActor = actorResolution.Actor;
+
+            // Retrieve all authorized, non-revoked memberships for workspace discovery
+            var memberships = await membershipService.GetUserMembershipsAsync(
+                callerActor.UserId,
+                callerActor,
+                cancellationToken);
+
+            return Results.Ok(memberships);
+        })
+        .WithName("GetCurrentUserMemberships")
+        .WithSummary("Discover tenant organizations accessible to the authenticated caller")
+        .WithDescription("Returns all accessible tenant organizations and membership roles for multi-tenant workspace selection. Does not require X-Tenant-ID header.")
+        .Produces<IReadOnlyList<UserTenantMembershipResponse>>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
+
         return endpoints;
     }
 }
