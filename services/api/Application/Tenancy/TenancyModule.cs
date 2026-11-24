@@ -2,10 +2,15 @@ namespace MaintenX.Api.Application.Tenancy;
 
 using MaintenX.Api.Application.Tenancy.Context;
 using MaintenX.Api.Application.Tenancy.Contracts;
+using MaintenX.Api.Application.Tenancy.Endpoints;
 using MaintenX.Api.Application.Tenancy.Middleware;
+using MaintenX.Api.Application.Tenancy.Resolution;
+using MaintenX.Api.Application.Tenancy.Services;
 using MaintenX.Api.Common.Modules;
+using MaintenX.Api.Common.Security;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 
 /// <summary>
@@ -52,10 +57,65 @@ public sealed class TenancyModule : IModule
         .ProducesProblem(StatusCodes.Status404NotFound);
 
         // 2. Canonical tenant management route group (/api/v1/tenants)
-        // Endpoints will be mounted here in Tasks 3.6.2, 3.6.3, and 3.6.4.
         var tenantsGroup = endpoints.MapGroup("/api/v1/tenants")
             .WithTags("Tenants")
             .RequireAuthorization();
+
+        // 2.1 Tenant Onboarding Endpoint (FEAT-003 Task 3.6.2)
+        tenantsGroup.MapPost(string.Empty, async (
+            [FromBody] CreateTenantRequest? request,
+            ITenantActorResolver actorResolver,
+            ITenantService tenantService,
+            HttpContext httpContext,
+            CancellationToken cancellationToken) =>
+        {
+            if (request is null)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "Bad Request",
+                    "Request body cannot be empty.",
+                    "VALIDATION_FAILED");
+            }
+
+            // Resolve server-side verified, trusted actor context (tenant-neutral: requireActiveTenantContext: false)
+            var actorResolution = await actorResolver.ResolveActorAsync(
+                httpContext.User,
+                requireActiveTenantContext: false,
+                cancellationToken);
+
+            if (!actorResolution.IsSuccess || actorResolution.Actor is null)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    actorResolution.StatusCode,
+                    actorResolution.ErrorTitle ?? "Unauthorized",
+                    actorResolution.ErrorDetail ?? "Access denied.",
+                    "UNAUTHORIZED");
+            }
+
+            var creatorActor = actorResolution.Actor;
+
+            // Execute atomic onboarding application service (guarantees PendingOnboarding status & Owner membership)
+            var creationResult = await tenantService.CreateTenantAsync(
+                creatorActor.UserId,
+                request,
+                cancellationToken);
+
+            // Returns 201 Created with approved representation; Location points to standard tenant route
+            return creationResult.ToHttpResult(httpContext);
+        })
+        .WithName("CreateTenant")
+        .WithSummary("Create and onboard a new tenant organization")
+        .WithDescription("Creates a new tenant organization in PendingOnboarding status with an atomic Owner membership for the authenticated caller. Requires authenticated caller identity; does not require active tenant context.")
+        .RequireRateLimiting(TenancyRateLimitPolicies.Onboarding)
+        .Produces<CreateTenantResponse>(StatusCodes.Status201Created)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .ProducesProblem(StatusCodes.Status403Forbidden)
+        .ProducesProblem(StatusCodes.Status409Conflict)
+        .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return endpoints;
     }

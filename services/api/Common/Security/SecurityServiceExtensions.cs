@@ -1,6 +1,7 @@
 namespace MaintenX.Api.Common.Security;
 
 using System.Net;
+using System.Security.Claims;
 using System.Threading.RateLimiting;
 using MaintenX.Api.Application.Auth;
 using MaintenX.Api.Application.Auth.Services;
@@ -241,6 +242,26 @@ public static class SecurityServiceExtensions
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.RefreshPermitLimit,
+                        Window = TimeSpan.FromSeconds(rateOptions.WindowSeconds),
+                        SegmentsPerWindow = rateOptions.SegmentsPerWindow,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    });
+            });
+
+            // Policy: Tenancy.Onboarding (Default 5 req/min partitioned by authenticated UserId, fallback to IP)
+            limiterOptions.AddPolicy(TenancyRateLimitPolicies.Onboarding, httpContext =>
+            {
+                var partitionKey = httpContext.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                                   ?? httpContext.User?.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)?.Value
+                                   ?? ResolveClientIp(httpContext)?.ToString()
+                                   ?? "anonymous";
+
+                return RateLimitPartition.GetSlidingWindowLimiter(
+                    partitionKey,
+                    _ => new SlidingWindowRateLimiterOptions
+                    {
+                        PermitLimit = rateOptions.RegistrationPermitLimit,
                         Window = TimeSpan.FromSeconds(rateOptions.WindowSeconds),
                         SegmentsPerWindow = rateOptions.SegmentsPerWindow,
                         QueueLimit = 0,
