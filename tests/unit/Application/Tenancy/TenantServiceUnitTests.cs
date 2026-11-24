@@ -1,6 +1,7 @@
 namespace MaintenX.UnitTests.Application.Tenancy;
 
 using MaintenX.Api.Application.Tenancy.Contracts;
+using MaintenX.Api.Application.Tenancy.Models;
 using MaintenX.Api.Application.Tenancy.Services;
 using MaintenX.Api.Domain.Auth;
 using MaintenX.Api.Domain.Tenants;
@@ -11,7 +12,7 @@ using Xunit;
 
 /// <summary>
 /// Unit tests for TenantService verifying input validation, authorization guards,
-/// error handling, and safe responses.
+/// error handling, lifecycle boundaries, and safe responses.
 /// </summary>
 public class TenantServiceUnitTests
 {
@@ -89,17 +90,232 @@ public class TenantServiceUnitTests
         Assert.Equal("VALIDATION_FAILED", result.ErrorCode);
     }
 
+    // --- Task 3.5.3 Unit Tests ---
+
     [Fact]
-    public async Task UnimplementedMethods_ThrowNotImplementedException()
+    public async Task GetTenantByIdAsync_EmptyTenantId_ReturnsValidationFailed()
     {
         var context = CreateDummyContext();
         var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
 
-        await Assert.ThrowsAsync<NotImplementedException>(() => service.GetTenantByIdAsync(Guid.NewGuid()));
-        await Assert.ThrowsAsync<NotImplementedException>(() => service.GetTenantBySlugAsync("acme"));
-        await Assert.ThrowsAsync<NotImplementedException>(() => service.UpdateTenantAsync(Guid.NewGuid(), new UpdateTenantRequest("New")));
-        await Assert.ThrowsAsync<NotImplementedException>(() => service.ActivateTenantAsync(Guid.NewGuid()));
-        await Assert.ThrowsAsync<NotImplementedException>(() => service.SuspendTenantAsync(Guid.NewGuid(), "reason"));
-        await Assert.ThrowsAsync<NotImplementedException>(() => service.DeactivateTenantAsync(Guid.NewGuid(), "reason"));
+        var result = await service.GetTenantByIdAsync(Guid.Empty);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_TENANT_ID", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetTenantByIdAsync_UnauthenticatedCaller_ReturnsNotFound_AntiEnumeration()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        // Caller without actor and without TenantContextAccessor
+        var result = await service.GetTenantByIdAsync(Guid.NewGuid(), actor: null);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(404, result.StatusCode);
+        Assert.Equal("TENANT_NOT_FOUND", result.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("a")]
+    [InlineData("acme--corp")]
+    [InlineData("acme_corp")]
+    [InlineData("acme corp")]
+    public async Task GetTenantBySlugAsync_InvalidSlug_ReturnsValidationFailed(string invalidSlug)
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.GetTenantBySlugAsync(invalidSlug);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_SLUG", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task GetTenantBySlugAsync_UnauthenticatedCaller_ReturnsNotFound_AntiEnumeration()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.GetTenantBySlugAsync("acme-facility", actor: null);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(404, result.StatusCode);
+        Assert.Equal("TENANT_NOT_FOUND", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateTenantAsync_EmptyTenantId_ReturnsValidationFailed()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.UpdateTenantAsync(Guid.Empty, new UpdateTenantRequest("New Name"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_TENANT_ID", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateTenantAsync_NullRequest_ReturnsValidationFailed()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.UpdateTenantAsync(Guid.NewGuid(), null!);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_REQUEST", result.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("A")]
+    public async Task UpdateTenantAsync_InvalidDisplayName_ReturnsValidationFailed(string invalidName)
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.UpdateTenantAsync(Guid.NewGuid(), new UpdateTenantRequest(invalidName));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_DISPLAY_NAME", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateTenantAsync_UnauthenticatedCaller_ReturnsForbidden()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.UpdateTenantAsync(Guid.NewGuid(), new UpdateTenantRequest("Valid Name"), actor: null);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(403, result.StatusCode);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ActivateTenantAsync_EmptyTenantId_ReturnsInvalidState()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.ActivateTenantAsync(Guid.Empty);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_TENANT_ID", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ActivateTenantAsync_NonPlatformAdmin_ReturnsForbidden()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+        var actor = TenantActorContext.FromUser(Guid.NewGuid(), isPlatformAdmin: false);
+
+        var result = await service.ActivateTenantAsync(Guid.NewGuid(), actor);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(403, result.StatusCode);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SuspendTenantAsync_EmptyTenantId_ReturnsInvalidState()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.SuspendTenantAsync(Guid.Empty, "Valid administrative reason.");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_TENANT_ID", result.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("ab")]
+    public async Task SuspendTenantAsync_InvalidReason_ReturnsInvalidState(string invalidReason)
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.SuspendTenantAsync(Guid.NewGuid(), invalidReason);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_REASON", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SuspendTenantAsync_NonPlatformAdmin_ReturnsForbidden()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+        var actor = TenantActorContext.Member(Guid.NewGuid(), Guid.NewGuid(), TenantMembershipRole.Owner);
+
+        var result = await service.SuspendTenantAsync(Guid.NewGuid(), "Valid administrative justification.", actor);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(403, result.StatusCode);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DeactivateTenantAsync_EmptyTenantId_ReturnsInvalidState()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.DeactivateTenantAsync(Guid.Empty, "Valid administrative reason.");
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_TENANT_ID", result.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("ab")]
+    public async Task DeactivateTenantAsync_InvalidReason_ReturnsInvalidState(string invalidReason)
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+
+        var result = await service.DeactivateTenantAsync(Guid.NewGuid(), invalidReason);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Equal("INVALID_REASON", result.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DeactivateTenantAsync_NonPlatformAdmin_ReturnsForbidden()
+    {
+        var context = CreateDummyContext();
+        var service = new TenantService(context, TimeProvider.System, NullLogger<TenantService>.Instance);
+        var actor = TenantActorContext.Member(Guid.NewGuid(), Guid.NewGuid(), TenantMembershipRole.Owner);
+
+        var result = await service.DeactivateTenantAsync(Guid.NewGuid(), "Administrative contract termination.", actor);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(403, result.StatusCode);
+        Assert.Equal("FORBIDDEN", result.ErrorCode);
     }
 }
