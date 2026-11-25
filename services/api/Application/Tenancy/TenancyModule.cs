@@ -153,8 +153,10 @@ public sealed class TenancyModule : IModule
         .WithName("GetCurrentUserMemberships")
         .WithSummary("Discover tenant organizations accessible to the authenticated caller")
         .WithDescription("Returns all accessible tenant organizations and membership roles for multi-tenant workspace selection. Does not require X-Tenant-ID header.")
+        .RequireRateLimiting(TenancyRateLimitPolicies.Standard)
         .Produces<IReadOnlyList<UserTenantMembershipResponse>>(StatusCodes.Status200OK)
-        .ProducesProblem(StatusCodes.Status401Unauthorized);
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         // 2.3 Tenant Lookup Endpoint (FEAT-003 Task 3.6.4)
         tenantsGroup.MapGet("/{id}", async (
@@ -200,10 +202,12 @@ public sealed class TenancyModule : IModule
         .WithName("GetTenantById")
         .WithSummary("Retrieve tenant organization metadata by identifier")
         .WithDescription("Returns tenant organization metadata if the authenticated caller holds an active membership in the target tenant. Enforces anti-enumeration by returning 404 Not Found for unauthorized or nonexistent tenants.")
+        .RequireRateLimiting(TenancyRateLimitPolicies.Standard)
         .Produces<TenantResponse>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status400BadRequest)
         .ProducesProblem(StatusCodes.Status401Unauthorized)
-        .ProducesProblem(StatusCodes.Status404NotFound);
+        .ProducesProblem(StatusCodes.Status404NotFound)
+        .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         // 2.4 Tenant Settings Update Endpoint (FEAT-003 Task 3.6.4)
         tenantsGroup.MapPatch("/{id}", async (
@@ -295,12 +299,14 @@ public sealed class TenancyModule : IModule
         .WithSummary("Update permitted tenant organization settings")
         .WithDescription("Updates permitted tenant settings (displayName) for an Active tenant. Requires Active Owner or Administrator membership, matching X-Tenant-ID context, and explicit ExpectedVersion concurrency precondition.")
         .RequireTenantContext()
+        .RequireRateLimiting(TenancyRateLimitPolicies.Standard)
         .Produces<TenantResponse>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status400BadRequest)
         .ProducesProblem(StatusCodes.Status401Unauthorized)
         .ProducesProblem(StatusCodes.Status403Forbidden)
         .ProducesProblem(StatusCodes.Status404NotFound)
-        .ProducesProblem(StatusCodes.Status409Conflict);
+        .ProducesProblem(StatusCodes.Status409Conflict)
+        .ProducesProblem(StatusCodes.Status429TooManyRequests);
 
         return endpoints;
     }

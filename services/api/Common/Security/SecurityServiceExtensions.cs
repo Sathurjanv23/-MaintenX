@@ -60,7 +60,7 @@ public static class SecurityServiceExtensions
 
             // Clear default known proxies and networks to prevent trusting arbitrary or unconfigured defaults
             options.KnownProxies.Clear();
-            options.KnownNetworks.Clear();
+            options.KnownIPNetworks.Clear();
 
             var proxyConfig = configuration.GetSection(TrustedProxyOptions.SectionName).Get<TrustedProxyOptions>()
                               ?? new TrustedProxyOptions();
@@ -84,13 +84,13 @@ public static class SecurityServiceExtensions
                 {
                     if (System.Net.IPNetwork.TryParse(network.Trim(), out var net))
                     {
-                        options.KnownNetworks.Add(new Microsoft.AspNetCore.HttpOverrides.IPNetwork(net.BaseAddress, net.PrefixLength));
+                        options.KnownIPNetworks.Add(net);
                     }
                 }
             }
 
             // In development and test environments, if no proxies or networks were specified, allow loopback
-            if (!environment.IsProduction() && options.KnownProxies.Count == 0 && options.KnownNetworks.Count == 0)
+            if (!environment.IsProduction() && options.KnownProxies.Count == 0 && options.KnownIPNetworks.Count == 0)
             {
                 options.KnownProxies.Add(IPAddress.Loopback);
                 options.KnownProxies.Add(IPAddress.IPv6Loopback);
@@ -249,19 +249,33 @@ public static class SecurityServiceExtensions
                     });
             });
 
-            // Policy: Tenancy.Onboarding (Default 5 req/min partitioned by authenticated UserId, fallback to IP)
+            // Policy: Tenancy.Onboarding (Default 5 req/min partitioned by verified authenticated UserId, fallback to IP)
             limiterOptions.AddPolicy(TenancyRateLimitPolicies.Onboarding, httpContext =>
             {
-                var partitionKey = httpContext.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                                   ?? httpContext.User?.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)?.Value
-                                   ?? ResolveClientIp(httpContext)?.ToString()
-                                   ?? "anonymous";
+                var partitionKey = ResolveAuthenticatedUserOrIpPartition(httpContext);
 
                 return RateLimitPartition.GetSlidingWindowLimiter(
                     partitionKey,
                     _ => new SlidingWindowRateLimiterOptions
                     {
                         PermitLimit = rateOptions.RegistrationPermitLimit,
+                        Window = TimeSpan.FromSeconds(rateOptions.WindowSeconds),
+                        SegmentsPerWindow = rateOptions.SegmentsPerWindow,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    });
+            });
+
+            // Policy: Tenancy.Standard (Default 30 req/min partitioned by verified authenticated UserId, fallback to IP)
+            limiterOptions.AddPolicy(TenancyRateLimitPolicies.Standard, httpContext =>
+            {
+                var partitionKey = ResolveAuthenticatedUserOrIpPartition(httpContext);
+
+                return RateLimitPartition.GetSlidingWindowLimiter(
+                    partitionKey,
+                    _ => new SlidingWindowRateLimiterOptions
+                    {
+                        PermitLimit = rateOptions.RefreshPermitLimit,
                         Window = TimeSpan.FromSeconds(rateOptions.WindowSeconds),
                         SegmentsPerWindow = rateOptions.SegmentsPerWindow,
                         QueueLimit = 0,
@@ -290,8 +304,8 @@ public static class SecurityServiceExtensions
 
     /// <summary>
     /// Configures the authoritative MaintenX security middleware pipeline in strict order:
-    /// 1. RateLimiter (enforces IP-based rate limiting before authentication)
-    /// 2. Authentication (validates JWT Bearer tokens)
+    /// 1. Authentication (validates JWT Bearer tokens so verified user identity is available)
+    /// 2. RateLimiter (enforces IP-based and verified-user-based rate limiting)
     /// 3. Authorization (enforces security policies)
     /// Note: app.UseForwardedHeaders() must execute at the front of the pipeline before CORS
     /// and exception handling so RemoteIpAddress and request scheme are resolved.
@@ -300,11 +314,27 @@ public static class SecurityServiceExtensions
     {
         ArgumentNullException.ThrowIfNull(app);
 
-        app.UseRateLimiter();
         app.UseAuthentication();
+        app.UseRateLimiter();
         app.UseAuthorization();
 
         return app;
+    }
+
+    private static string ResolveAuthenticatedUserOrIpPartition(HttpContext httpContext)
+    {
+        if (httpContext.User?.Identity?.IsAuthenticated == true)
+        {
+            var verifiedUserId = httpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                                 ?? httpContext.User.FindFirst(System.IdentityModel.Tokens.Jwt.JwtRegisteredClaimNames.Sub)?.Value;
+
+            if (!string.IsNullOrWhiteSpace(verifiedUserId))
+            {
+                return $"user:{verifiedUserId}";
+            }
+        }
+
+        return $"ip:{ResolveClientIp(httpContext)?.ToString() ?? "anonymous"}";
     }
 
     private static IPAddress? ResolveClientIp(HttpContext httpContext)
