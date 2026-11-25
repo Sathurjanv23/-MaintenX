@@ -156,6 +156,152 @@ public sealed class TenancyModule : IModule
         .Produces<IReadOnlyList<UserTenantMembershipResponse>>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status401Unauthorized);
 
+        // 2.3 Tenant Lookup Endpoint (FEAT-003 Task 3.6.4)
+        tenantsGroup.MapGet("/{id}", async (
+            string id,
+            ITenantActorResolver actorResolver,
+            ITenantService tenantService,
+            HttpContext httpContext,
+            CancellationToken cancellationToken) =>
+        {
+            if (!Guid.TryParse(id, out var tenantId) || tenantId == Guid.Empty)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "Bad Request",
+                    "The supplied tenant identifier is not a valid non-empty GUID.",
+                    "INVALID_TENANT_ID");
+            }
+
+            // Resolve server-side verified, trusted actor context (tenant-neutral: permits PendingOnboarding owner lookup)
+            var actorResolution = await actorResolver.ResolveActorAsync(
+                httpContext.User,
+                requireActiveTenantContext: false,
+                cancellationToken);
+
+            if (!actorResolution.IsSuccess || actorResolution.Actor is null)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    actorResolution.StatusCode,
+                    actorResolution.ErrorTitle ?? "Unauthorized",
+                    actorResolution.ErrorDetail ?? "Access denied.",
+                    "UNAUTHORIZED");
+            }
+
+            var lookupResult = await tenantService.GetTenantByIdAsync(
+                tenantId,
+                actorResolution.Actor,
+                cancellationToken);
+
+            return lookupResult.ToHttpResult(httpContext);
+        })
+        .WithName("GetTenantById")
+        .WithSummary("Retrieve tenant organization metadata by identifier")
+        .WithDescription("Returns tenant organization metadata if the authenticated caller holds an active membership in the target tenant. Enforces anti-enumeration by returning 404 Not Found for unauthorized or nonexistent tenants.")
+        .Produces<TenantResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+
+        // 2.4 Tenant Settings Update Endpoint (FEAT-003 Task 3.6.4)
+        tenantsGroup.MapPatch("/{id}", async (
+            string id,
+            [FromBody] UpdateTenantRequest? request,
+            ITenantActorResolver actorResolver,
+            ITenantService tenantService,
+            HttpContext httpContext,
+            CancellationToken cancellationToken) =>
+        {
+            if (!Guid.TryParse(id, out var tenantId) || tenantId == Guid.Empty)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "Bad Request",
+                    "The supplied tenant identifier is not a valid non-empty GUID.",
+                    "INVALID_TENANT_ID");
+            }
+
+            if (request is null)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "Bad Request",
+                    "Request body cannot be empty.",
+                    "VALIDATION_FAILED");
+            }
+
+            if (!request.ExpectedVersion.HasValue)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "Bad Request",
+                    "ExpectedVersion is required to update tenant settings.",
+                    "MISSING_EXPECTED_VERSION");
+            }
+
+            if (request.ExpectedVersion.Value <= 0)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    StatusCodes.Status400BadRequest,
+                    "Bad Request",
+                    "ExpectedVersion must be a positive integer.",
+                    "INVALID_EXPECTED_VERSION");
+            }
+
+            // Resolve server-side verified, trusted actor context with mandatory active tenant context
+            var actorResolution = await actorResolver.ResolveActorAsync(
+                httpContext.User,
+                requireActiveTenantContext: true,
+                cancellationToken);
+
+            if (!actorResolution.IsSuccess || actorResolution.Actor is null)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    actorResolution.StatusCode,
+                    actorResolution.ErrorTitle ?? "Unauthorized",
+                    actorResolution.ErrorDetail ?? "Access denied.",
+                    actorResolution.StatusCode == StatusCodes.Status401Unauthorized ? "UNAUTHORIZED" : "FORBIDDEN");
+            }
+
+            var callerActor = actorResolution.Actor;
+
+            // Enforce strict consistency between route tenant ID and X-Tenant-ID active context
+            if (!callerActor.TenantId.HasValue || callerActor.TenantId.Value != tenantId)
+            {
+                return TenantResultHttpMapper.CreateProblem(
+                    httpContext,
+                    StatusCodes.Status403Forbidden,
+                    "Forbidden",
+                    "Cross-tenant modification is denied: route tenant identifier does not match active tenant context.",
+                    "FORBIDDEN");
+            }
+
+            var updateResult = await tenantService.UpdateTenantAsync(
+                tenantId,
+                request,
+                callerActor,
+                cancellationToken);
+
+            return updateResult.ToHttpResult(httpContext);
+        })
+        .WithName("UpdateTenantSettings")
+        .WithSummary("Update permitted tenant organization settings")
+        .WithDescription("Updates permitted tenant settings (displayName) for an Active tenant. Requires Active Owner or Administrator membership, matching X-Tenant-ID context, and explicit ExpectedVersion concurrency precondition.")
+        .RequireTenantContext()
+        .Produces<TenantResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .ProducesProblem(StatusCodes.Status403Forbidden)
+        .ProducesProblem(StatusCodes.Status404NotFound)
+        .ProducesProblem(StatusCodes.Status409Conflict);
+
         return endpoints;
     }
 }

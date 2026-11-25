@@ -365,40 +365,88 @@ public sealed class TenantService : ITenantService
             }
         }
 
-        var tenant = await _dbContext.Tenants
-            .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
-
-        if (tenant is null)
-        {
-            return TenantResult.NotFound();
-        }
-
-        if (tenant.Status == TenantStatus.Deactivated)
-        {
-            _logger.LogWarning("Tenant update rejected: tenant {TenantId} is permanently deactivated.", tenantId);
-            return TenantResult.Conflict("Cannot update display name for deactivated tenant organization.", "DEACTIVATED_TENANT");
-        }
-
-        // Optimistic Concurrency Pre-check
-        if (request.ExpectedVersion.HasValue && request.ExpectedVersion.Value != tenant.Version)
-        {
-            _logger.LogWarning(
-                "Optimistic concurrency conflict for Tenant {TenantId}: Expected version {ExpectedVersion}, but current version is {CurrentVersion}.",
-                tenantId, request.ExpectedVersion.Value, tenant.Version);
-            return TenantResult.Conflict($"Optimistic concurrency conflict: Expected version {request.ExpectedVersion.Value} does not match current version {tenant.Version}.");
-        }
-
-        var now = _timeProvider.GetUtcNow().UtcDateTime;
-        tenant.UpdateDisplayName(trimmedDisplayName, now);
-
         try
         {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            _logger.LogInformation(
-                "Tenant {TenantId} settings updated by User {UserId}: DisplayName='{DisplayName}', Version={Version}.",
-                tenant.Id, effectiveActor.UserId, tenant.DisplayName, tenant.Version);
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
+            {
+                var isOuterTx = _dbContext.Database.CurrentTransaction is null;
+                var tx = isOuterTx ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken) : null;
+                try
+                {
+                    var tenant = await _dbContext.Tenants
+                        .FirstOrDefaultAsync(t => t.Id == tenantId, cancellationToken);
 
-            return TenantResult.Success(MapToResponse(tenant));
+                    if (tenant is null)
+                    {
+                        return TenantResult.NotFound();
+                    }
+
+                    if (tenant.Status == TenantStatus.Deactivated)
+                    {
+                        _logger.LogWarning("Tenant update rejected: tenant {TenantId} is permanently deactivated.", tenantId);
+                        return TenantResult.Conflict("Cannot update display name for deactivated tenant organization.", "DEACTIVATED_TENANT");
+                    }
+
+                    // Optimistic Concurrency Pre-check (enforced even if submitted values match current state)
+                    if (request.ExpectedVersion.HasValue && request.ExpectedVersion.Value != tenant.Version)
+                    {
+                        _logger.LogWarning(
+                            "Optimistic concurrency conflict for Tenant {TenantId}: Expected version {ExpectedVersion}, but current version is {CurrentVersion}.",
+                            tenantId, request.ExpectedVersion.Value, tenant.Version);
+                        return TenantResult.Conflict($"Optimistic concurrency conflict: Expected version {request.ExpectedVersion.Value} does not match current version {tenant.Version}.");
+                    }
+
+                    // Idempotent no-op: preserve version and avoid false audit records
+                    if (tenant.DisplayName == trimmedDisplayName)
+                    {
+                        return TenantResult.Success(MapToResponse(tenant));
+                    }
+
+                    var previousVersion = tenant.Version;
+                    var now = _timeProvider.GetUtcNow().UtcDateTime;
+                    tenant.UpdateDisplayName(trimmedDisplayName, now);
+
+                    var auditEvent = TenantAuditEvent.Create(
+                        tenant.Id,
+                        effectiveActor.UserId,
+                        "TenantSettingsUpdated",
+                        tenant.Status.ToString(),
+                        tenant.Status.ToString(),
+                        $"Changed fields: DisplayName (version {previousVersion} -> {tenant.Version})",
+                        now);
+
+                    _dbContext.TenantAuditEvents.Add(auditEvent);
+
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+
+                    if (tx is not null)
+                    {
+                        await tx.CommitAsync(cancellationToken);
+                    }
+
+                    _logger.LogInformation(
+                        "Security Audit: TenantSettingsUpdated [ActorUserId={ActorUserId}, TenantId={TenantId}, Version={Version}, Timestamp={Timestamp:O}]",
+                        effectiveActor.UserId, tenant.Id, tenant.Version, now);
+
+                    return TenantResult.Success(MapToResponse(tenant));
+                }
+                catch
+                {
+                    if (isOuterTx)
+                    {
+                        _dbContext.ChangeTracker.Clear();
+                    }
+                    throw;
+                }
+                finally
+                {
+                    if (tx is not null)
+                    {
+                        await tx.DisposeAsync();
+                    }
+                }
+            });
         }
         catch (DbUpdateConcurrencyException ex)
         {
