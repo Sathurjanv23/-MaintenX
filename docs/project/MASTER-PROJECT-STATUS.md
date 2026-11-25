@@ -156,11 +156,11 @@ Every stage of development has been delivered through strictly reviewed, atomic 
 
 ## 6. Testing & CI Pipeline Audit
 
-### Latest Verified Test Execution Counts (FEAT-003 Task 3.6.5 / `main` `b6eac47`)
+### Latest Verified Test Execution Counts (FEAT-003-SEC-001 / `fix/003-security-remediation`)
 - **Backend Build (`MaintenX.sln` Release)**: **0 Errors, 0 Warnings** (`ASPDEPR005` resolved via `KnownIPNetworks`).
 - **Backend Unit Tests (`MaintenX.UnitTests.csproj`)**: **567 passed**, 0 failed, 0 skipped.
-- **Backend Integration Tests (`MaintenX.IntegrationTests.csproj`)**: **303 passed**, 0 failed, 0 skipped (PostgreSQL 16).
-- **Total Backend Tests**: **870 passed (100%)**.
+- **Backend Integration Tests (`MaintenX.IntegrationTests.csproj`)**: **306 passed**, 0 failed, 0 skipped (PostgreSQL 16; includes `TD-09`, `TD-10`, `TD-11` remediation tests).
+- **Total Backend Tests**: **873 passed (100%)**.
 - **CI Workflow Status**: All 4 GitHub Actions jobs (`Backend Build & Tests (.NET 10)`, `Frontend Lint & Build (Next.js)`, `Flutter Lint & Tests (Mobile)`, `Validate Docker Compose`) passing on `main`.
 
 *Historical Baseline (CI Run `44232784151`, FEAT-002): 349 unit + 156 integration + 1 mobile widget = 506 tests.*

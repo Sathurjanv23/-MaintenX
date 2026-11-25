@@ -145,7 +145,30 @@ public sealed class TenantResolutionService : ITenantResolutionService
                 "The requested tenant organization was not found.");
         }
 
-        // 8. Enforce Tenant Operational Status
+        // 8. Query Caller Membership BEFORE exposing any tenant lifecycle status (TD-09 Anti-Enumeration)
+        var memberships = await _dbContext.TenantMemberships
+            .AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(m => m.TenantId == tenant.Id && m.UserId == userId)
+            .ToListAsync(cancellationToken);
+
+        // Find the non-revoked membership (guaranteed at most one by unique partial index)
+        var currentMembership = memberships.FirstOrDefault(m => m.Status != TenantMembershipStatus.Revoked);
+
+        if (currentMembership is null)
+        {
+            // Non-members and historically revoked members have no visibility into tenant existence or status.
+            // Return the exact same generic 404 response as a nonexistent tenant.
+            _logger.LogWarning(
+                "Tenant resolution denied (anti-enumeration 404): user {UserId} has no non-revoked membership in tenant {TenantId}.",
+                userId, tenant.Id);
+            return TenantResolutionResult.Failure(
+                StatusCodes.Status404NotFound,
+                "Not Found",
+                "The requested tenant organization was not found.");
+        }
+
+        // 9. Enforce Tenant Operational Status (only for callers with an existing non-revoked membership)
         if (tenant.Status == TenantStatus.Suspended)
         {
             _logger.LogWarning("Tenant resolution denied: tenant {TenantId} is suspended.", tenant.Id);
@@ -173,37 +196,7 @@ public sealed class TenantResolutionService : ITenantResolutionService
                 "Access to the requested tenant organization is denied.");
         }
 
-        // 9. Query and Validate User Membership for this exact Tenant
-        var memberships = await _dbContext.TenantMemberships
-            .AsNoTracking()
-            .IgnoreQueryFilters()
-            .Where(m => m.TenantId == tenant.Id && m.UserId == userId)
-            .ToListAsync(cancellationToken);
-
-        // Find the non-revoked membership (guaranteed at most one by unique partial index)
-        var currentMembership = memberships.FirstOrDefault(m => m.Status != TenantMembershipStatus.Revoked);
-
-        if (currentMembership is null)
-        {
-            // If historical memberships exist and all are revoked
-            if (memberships.Count > 0)
-            {
-                _logger.LogWarning("Tenant resolution denied: user {UserId} membership in tenant {TenantId} is revoked.", userId, tenant.Id);
-                return TenantResolutionResult.Failure(
-                    StatusCodes.Status403Forbidden,
-                    "Forbidden",
-                    "Access to the requested tenant organization is denied.");
-            }
-
-            // User has no membership record for this tenant at all
-            _logger.LogWarning("Tenant resolution denied: user {UserId} is not a member of tenant {TenantId}.", userId, tenant.Id);
-            return TenantResolutionResult.Failure(
-                StatusCodes.Status403Forbidden,
-                "Forbidden",
-                "Access to the requested tenant organization is denied.");
-        }
-
-        // Validate membership lifecycle status
+        // 10. Validate membership lifecycle status
         if (currentMembership.Status == TenantMembershipStatus.Pending)
         {
             _logger.LogWarning("Tenant resolution denied: user {UserId} membership in tenant {TenantId} is pending.", userId, tenant.Id);

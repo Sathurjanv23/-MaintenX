@@ -34,13 +34,12 @@ Detailed application and HTTP verification evidence is recorded in [FEAT-003-APP
 
 ## 2. Pre-Closure Security Verification Findings
 
-1. **Tenant Anti-Enumeration (`TenantResolutionService` vs `GET /api/v1/tenants/{id}`)**:
-   - `GET /api/v1/tenants/{id}` returns uniform `404 Not Found` (`TENANT_NOT_FOUND`) for nonexistent and non-member tenants.
-   - **Confirmed Remaining Disclosure Vector**: `TenantResolutionService` (`X-Tenant-ID` middleware on `GET /api/v1/tenancy/current` and `PATCH /api/v1/tenants/{id}`) returns `404` for unknown tenants and `403` for existing unauthorized/inactive tenants. While all existing inactive/non-member states return identical `403` messages, an authenticated caller can still distinguish *unknown* (`404`) from *existing* (`403`) tenant identifiers via `X-Tenant-ID`.
-2. **Absolute Session Lifetime**:
-   - Verified in `UserSession.RecordActivity` (does not extend `ExpiresAtUtc`) and `AuthenticationService.RefreshTokensAsync` (rejects when `session.IsExpired(utcNow)`). `Auth_InvalidExpiredMissingClaimsAndTamperedTokens_RejectedWith401` verifies rejection when `user_sessions.expires_at_utc` is reached even with a valid non-expired JWT.
-3. **Standard Tenancy Rate Limiting (`Tenancy.Standard`)**:
-   - Verified `Tenancy.Standard` (`30 req/min/user`, sliding window, 6 segments) is attached to `GET /api/v1/tenants/me`, `GET /api/v1/tenants/{id}`, and `PATCH /api/v1/tenants/{id}`, sharing a per-user `Tenancy.Standard` allowance. **Verification Gap**: Explicit 31st-request `429`/`Retry-After` exhaustion test for `Tenancy.Standard` has not yet been added (exhaustion is verified on `Tenancy.Onboarding` and `Auth.Login`).
+1. **Tenant Anti-Enumeration (`TD-09` — RESOLVED)**:
+   - Both `GET /api/v1/tenants/{id}` and `TenantResolutionService` (`X-Tenant-ID` middleware) now check caller membership visibility **before** evaluating tenant lifecycle status. Nonexistent, non-member, inactive-without-membership, and historically revoked-member tenants all return identical generic `404 Not Found` (`"The requested tenant organization was not found."`). Verified by `TD09_UnknownAndUnauthorizedTenantsByUuidAndSlug_ReturnIdenticalGeneric404`.
+2. **Absolute Session Lifetime (`TD-10` — RESOLVED)**:
+   - Verified in `UserSession.RecordActivity` (does not extend `ExpiresAtUtc`) and `AuthenticationService.RefreshTokensAsync` (rejects when `session.IsExpired(utcNow)`). Verified end-to-end across a 30-day `MutableTimeProvider` refresh chain in `TD10_RefreshChainAndAbsoluteSessionBoundary_EnforcedAcrossTimeProgression`.
+3. **Standard Tenancy Rate Limiting (`TD-11` — RESOLVED)**:
+   - Verified `Tenancy.Standard` (`30 req/min/user`, sliding window, 6 segments) is shared across `GET /api/v1/tenants/me`, `GET /api/v1/tenants/{id}`, and `PATCH /api/v1/tenants/{id}`. Verified 31st-request `429 Too Many Requests` + `Retry-After` + ProblemDetails + zero DB/audit mutation + independent user partitioning in `TD11_StandardRateLimit_Allows30SharedRequests_Rejects31stWith429AndRetryAfter_AndIsolatesUsers`.
 4. **Audit Isolation & Immutability (`platform.tenant_audit_events`)**:
    - `TenantAuditEvent` does not implement `ITenantEntity` and has no public read/update/delete APIs. Immutability is enforced at domain/application layers, not yet via PostgreSQL `REVOKE UPDATE, DELETE` or DB triggers.
 5. **Transaction Retry Limitations**:
@@ -78,9 +77,9 @@ Detailed application and HTTP verification evidence is recorded in [FEAT-003-APP
 | **TD-06** | In-memory rate limiting is single-instance only | `SecurityServiceExtensions.cs` | Medium | Scalability Gap | No (MVP) | Redis-backed distributed rate limiter | Scale-out |
 | **TD-07** | In-memory `SecurityStampValidator` 60s cache has no cross-node invalidation | `SecurityStampValidator.cs` | Medium | Scalability Gap | No (MVP) | Distributed cache / pub-sub invalidation | Scale-out |
 | **TD-08** | Ambiguous post-commit network ACK failure not deduplicated; `ChangeTracker.Clear()` assumption on outer tx | `TenantService.cs` | Low | Resilience Gap | No | Idempotency keys & isolated DbContext scope | Hardening |
-| **TD-09** | `TenantResolutionService` returns `404` (unknown) vs `403` (existing non-member) on `X-Tenant-ID` | `TenantResolutionService.cs` | Low-Medium | Confirmed Info Disclosure | No (documented) | Unify non-member/unknown response or policy alignment | `FEAT-004` / Hardening |
-| **TD-10** | Refresh-token extension beyond 30d absolute lifetime tested via DB expiry; explicit end-to-end 30d refresh-chain test optional | `AuthenticationService` | Low | Verification Gap | No | Add dedicated 30d boundary refresh test | QA Hardening |
-| **TD-11** | `Tenancy.Standard` (30/min) policy has no dedicated 31st-request `429`/`Retry-After` exhaustion test | `TenantApiSecurityHttpIntegrationTests` | Low | Verification Gap | No | Add 31-request exhaustion test | QA Hardening |
+| **TD-09** | `TenantResolutionService` returned `404` (unknown) vs `403` (existing non-member) on `X-Tenant-ID` | `TenantResolutionService.cs` | Low-Medium | **RESOLVED** (`FEAT-003-SEC-001`) | No | Membership checked before lifecycle status; uniform `404` verified by `TD09_*` | Closed |
+| **TD-10** | Refresh-token extension beyond 30d absolute lifetime tested via DB expiry; explicit 30d refresh-chain test needed | `AuthenticationService` | Low | **RESOLVED** (`FEAT-003-SEC-001`) | No | 30-day `MutableTimeProvider` refresh-chain boundary verified by `TD10_*` | Closed |
+| **TD-11** | `Tenancy.Standard` (30/min) policy lacked dedicated 31st-request `429`/`Retry-After` exhaustion test | `TenantApiSecurityHttpIntegrationTests` | Low | **RESOLVED** (`FEAT-003-SEC-001`) | No | 31st-request `429`, `Retry-After`, shared quota & user isolation verified by `TD11_*` | Closed |
 | **TD-12** | GitHub PR `--reviewer januka-karunakaran` leaves `reviewers: []` due to repo collaborator permissions | GitHub Repo Settings | Low | Process Limitation | No | Accept collaborator invite / grant triage+ access | Repo Admin |
 
 ---
@@ -100,6 +99,6 @@ Detailed application and HTTP verification evidence is recorded in [FEAT-003-APP
 
 ## 6. Final FEAT-003 Closure Classification
 
-**Classification:** **PLANNED FOUNDATION COMPLETE** (with `TD-01`/`TD-02`/`TD-03` explicitly deferred to `FEAT-004` and `TD-09` documented as a remaining non-blocking disclosure distinction in `TenantResolutionService`).
-- All 15 foundational tasks (`3.1` through `3.6.5`) are merged on `main`; Step `3.7` completes architecture documentation (`ADR-0004`), traceability, technical debt registration, and `FEAT-004` handover.
-- **Total Verified Backend Tests**: **870 Passed** (567 Unit + 303 PostgreSQL Integration), **0 Warnings**, **0 Errors**.
+**Classification:** **PLANNED FOUNDATION COMPLETE** (with `TD-01`/`TD-02`/`TD-03` explicitly deferred to `FEAT-004`; `TD-09`, `TD-10`, and `TD-11` closed in `FEAT-003-SEC-001`).
+- All 15 foundational tasks (`3.1` through `3.6.5`), Step `3.7` architecture documentation (`ADR-0004`), and `FEAT-003-SEC-001` security remediation are complete.
+- **Total Verified Backend Tests**: **873 Passed** (567 Unit + 306 PostgreSQL Integration), **0 Warnings**, **0 Errors**.
