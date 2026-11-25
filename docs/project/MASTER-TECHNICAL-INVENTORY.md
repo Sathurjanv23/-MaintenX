@@ -2,10 +2,10 @@
 
 **Document ID:** MASTER-TECHNICAL-INVENTORY
 **Audit Reference:** PROJECT-AUDIT-001
-**Audit Date:** 2026-11-23
+**Audit Date:** 2026-11-25
 **Auditor Roles:** Senior .NET Software Architect, Security Engineer, DevOps Engineer
 **Repository:** `Sathurjanv23/-MaintenX`
-**Base Commit:** `b88748ed07c7f7bc19a1cf6ffae1c238b77626ad`
+**Base Commit:** `b6eac47a5b8f2f7c91e1ee405393cf819cd35ac6` (PR #38 merged on `main`)
 
 ---
 
@@ -89,14 +89,31 @@ services/api/
 │   │   └── UserStatus.cs                                # PendingVerification, Active, Suspended, Deactivated
 │   └── Tenants/
 │       ├── ITenantEntity.cs                             # Multi-tenant contract (TenantId Guid)
-│       ├── Tenant.cs                                    # Root tenant aggregate (slug, status, version)
-│       └── TenantStatus.cs                              # Active, Suspended, Terminated
+│       ├── Tenant.cs                                    # Root tenant aggregate (slug, displayName, status, version)
+│       ├── TenantAuditEvent.cs                          # Append-only tenant lifecycle & settings audit event
+│       ├── TenantMembership.cs                          # Tenant membership aggregate (ITenantEntity)
+│       ├── TenantMembershipRole.cs                      # Owner, Administrator, Member
+│       ├── TenantMembershipStatus.cs                    # Pending, Active, Suspended, Revoked
+│       └── TenantStatus.cs                              # Active, Suspended, PendingOnboarding, Deactivated
+├── Application/Tenancy/                                 # FEAT-003 Multi-Tenancy Application & HTTP Layer
+│   ├── TenancyModule.cs                                 # /api/v1/tenancy/current & /api/v1/tenants/* endpoints
+│   ├── TenancyServiceExtensions.cs                      # AddMaintenXTenancy() & UseTenantResolution()
+│   ├── Context/                                         # ITenantContext, TenantContext, TenantContextAccessor
+│   ├── Contracts/                                       # CreateTenant*, UpdateTenantRequest, TenantResponse, UserTenantMembershipResponse
+│   ├── Endpoints/                                       # TenantResultHttpMapper (RFC 7807 ProblemDetails)
+│   ├── Middleware/                                      # TenantResolutionMiddleware, RequireTenantContextAttribute
+│   ├── Models/                                          # TenantActorContext, TenantResult, TenantMembershipResult, etc.
+│   ├── Resolution/                                      # ITenantActorResolver, TenantActorResolver, TenantResolutionService
+│   ├── Services/                                        # ITenantService, TenantService, ITenantMembershipService, TenantMembershipService
+│   └── Validation/                                      # TenantValidation
 └── Infrastructure/
     └── Persistence/
         ├── Configurations/                              # EF Core IEntityTypeConfiguration mappings
         │   ├── RefreshTokenConfiguration.cs
         │   ├── SecurityAuditEventConfiguration.cs
+        │   ├── TenantAuditEventConfiguration.cs
         │   ├── TenantConfiguration.cs
+        │   ├── TenantMembershipConfiguration.cs
         │   ├── UserConfiguration.cs
         │   └── UserSessionConfiguration.cs
         ├── DesignTimeDbContextFactory.cs                # Migration tooling factory
