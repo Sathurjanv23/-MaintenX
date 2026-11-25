@@ -78,7 +78,7 @@ The following alternatives are evaluated retrospectively against MaintenX's modu
 2. **Platform Admin Authorization Blocked (`FEAT-004`)**: No trusted platform administrator identity or JWT role claim exists yet. `IsPlatformAdmin` is hardcoded `false` in `TenantActorResolver`, and `/activate`, `/suspend`, `/deactivate` HTTP routes remain unexposed.
 3. **Database-Level Audit Immutability Deferred**: `platform.tenant_audit_events` is append-only in domain/application code, but PostgreSQL role permissions (`REVOKE UPDATE, DELETE`) / immutability triggers are not yet enforced.
 4. **Single-Instance Rate Limiting & Stamp Cache**: `RateLimiter` partitions and `SecurityStampValidator` 60s cache are in-memory per node.
-5. **Middleware Tenant Enumeration Distinction**: `GET /api/v1/tenants/{id}` returns uniform `404` for nonexistent and non-member tenants, whereas `TenantResolutionService` (`X-Tenant-ID`) returns `404` for nonexistent tenants and `403` for existing non-member/inactive tenants.
+5. **Uniform Anti-Enumeration Policy (`TD-09` Resolved)**: Both `GET /api/v1/tenants/{id}` and `TenantResolutionService` (`X-Tenant-ID` middleware) check membership visibility before exposing tenant lifecycle status, returning identical generic `404 Not Found` responses for nonexistent, non-member, and historically revoked-member tenants.
 
 ---
 

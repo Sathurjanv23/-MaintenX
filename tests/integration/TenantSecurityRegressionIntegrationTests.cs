@@ -444,13 +444,13 @@ public class TenantSecurityRegressionIntegrationTests : IAsyncLifetime
 
         var victimTenantId = victimTenant.Response!.TenantId;
 
-        // Act & Assert 1: Attacker attempts resolution for victimTenant -> 403 Forbidden (safe rejection, anti-enumeration)
+        // Act & Assert 1: Attacker attempts resolution for victimTenant -> 404 Not Found (TD-09 anti-enumeration)
         attackerClient.DefaultRequestHeaders.Add("X-Tenant-ID", victimTenantId.ToString());
         var response = await attackerClient.GetAsync("/api/v1/tenancy/current");
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
+        Assert.Equal("The requested tenant organization was not found.", doc.RootElement.GetProperty("detail").GetString());
 
         // Act & Assert 2: Attacker attempts to query membership in victimTenant via TenantMembershipService -> AntiEnumeration (404 Not Found)
         using (var context = CreateContext())
@@ -681,13 +681,13 @@ public class TenantSecurityRegressionIntegrationTests : IAsyncLifetime
             }
         }
 
-        // Assert 1: Operational context resolution is now denied (403 Forbidden)
+        // Assert 1: Operational context resolution is now denied (404 Not Found - TD-09 anti-enumeration)
         client.DefaultRequestHeaders.Add("X-Tenant-ID", tenantId.ToString());
         var revokedResp = await client.GetAsync("/api/v1/tenancy/current");
 
-        Assert.Equal(HttpStatusCode.Forbidden, revokedResp.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, revokedResp.StatusCode);
         var doc = JsonDocument.Parse(await revokedResp.Content.ReadAsStringAsync());
-        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
+        Assert.Equal("The requested tenant organization was not found.", doc.RootElement.GetProperty("detail").GetString());
 
         // Assert 2: Neutral discovery hides revoked memberships
         using (var context = CreateContext())

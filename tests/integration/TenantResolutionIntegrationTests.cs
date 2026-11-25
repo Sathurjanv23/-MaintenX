@@ -278,7 +278,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Resolve_UserHasNoMembershipInTenant_Returns403Forbidden()
+    public async Task Resolve_UserHasNoMembershipInTenant_Returns404NotFound_AntiEnumeration()
     {
         var (client, _, _) = await CreateAuthenticatedUserAsync("no_mem");
         var tenant = await CreateTenantAsync($"tenant-{Guid.NewGuid():N}"[..20], "Foreign Org");
@@ -287,11 +287,12 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         var response = await client.GetAsync("/api/v1/tenancy/current");
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
 
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal(403, doc.RootElement.GetProperty("status").GetInt32());
+        Assert.Equal(404, doc.RootElement.GetProperty("status").GetInt32());
+        Assert.Equal("The requested tenant organization was not found.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]
@@ -327,7 +328,7 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Resolve_RevokedMembership_Returns403Forbidden()
+    public async Task Resolve_RevokedMembership_Returns404NotFound_AntiEnumeration()
     {
         var (client, user, _) = await CreateAuthenticatedUserAsync("rev_mem");
         var tenant = await CreateTenantAsync($"tenant-{Guid.NewGuid():N}"[..20], "Revoked Mem Org");
@@ -345,9 +346,9 @@ public class TenantResolutionIntegrationTests : IAsyncLifetime
 
         var response = await client.GetAsync("/api/v1/tenancy/current");
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("Access to the requested tenant organization is denied.", doc.RootElement.GetProperty("detail").GetString());
+        Assert.Equal("The requested tenant organization was not found.", doc.RootElement.GetProperty("detail").GetString());
     }
 
     [Fact]

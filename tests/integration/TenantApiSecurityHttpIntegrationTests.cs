@@ -544,7 +544,7 @@ public class TenantApiSecurityHttpIntegrationTests : IAsyncLifetime
         using (var reqA = new HttpRequestMessage(HttpMethod.Get, "/api/v1/tenancy/current"))
         {
             reqA.Headers.Add("X-Tenant-ID", tenantA.Id.ToString());
-            Assert.Equal(HttpStatusCode.Forbidden, (await client.SendAsync(reqA)).StatusCode);
+            Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(reqA)).StatusCode);
         }
 
         var meAfterRevoke = await (await client.GetAsync("/api/v1/tenants/me"))

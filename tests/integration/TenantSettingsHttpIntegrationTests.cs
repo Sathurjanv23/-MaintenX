@@ -409,12 +409,12 @@ public class TenantSettingsHttpIntegrationTests : IAsyncLifetime
             new UpdateTenantRequest("Hijacked B", tenantB.Version));
         Assert.Equal(HttpStatusCode.Forbidden, ownerMismatch.StatusCode);
 
-        // 2. Admin A with Tenant B header targeting Tenant B route (Not a member of Tenant B)
+        // 2. Admin A with Tenant B header targeting Tenant B route (Not a member of Tenant B -> 404 anti-enumeration)
         adminAClient.DefaultRequestHeaders.Add("X-Tenant-ID", tenantB.Id.ToString());
         var adminForeign = await adminAClient.PatchAsJsonAsync(
             $"/api/v1/tenants/{tenantB.Id}",
             new UpdateTenantRequest("Hijacked B", tenantB.Version));
-        Assert.Equal(HttpStatusCode.Forbidden, adminForeign.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, adminForeign.StatusCode);
 
         using var db = CreateDbContext();
         var persistedB = await db.Tenants.AsNoTracking().SingleAsync(t => t.Id == tenantB.Id);
