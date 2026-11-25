@@ -2,10 +2,10 @@
 
 **Document ID:** MASTER-FEATURE-ROADMAP
 **Audit Reference:** PROJECT-AUDIT-001
-**Audit Date:** 2026-11-23
+**Audit Date:** 2026-11-25
 **Auditor Roles:** Senior .NET Software Architect, Technical Project Manager, Security Engineer
 **Repository:** `Sathurjanv23/-MaintenX`
-**Base Commit:** `b88748ed07c7f7bc19a1cf6ffae1c238b77626ad`
+**Base Commit:** `b6eac47a5b8f2f7c91e1ee405393cf819cd35ac6` (PR #38 merged on `main`)
 
 ---
 
@@ -24,8 +24,8 @@
 
 | Req ID | Requirement Name | Scope & Detailed Description | Mapped Feature | Status | Realized Implementation vs Gaps |
 | :---: | :--- | :--- | :---: | :---: | :--- |
-| **FR-001** | Tenant Provisioning & Organization Lifecycle | Provision tenant entities, configure subscription tiers, assign administrative owners, and manage tenant lifecycle states (`Active`, `Suspended`, `Terminated`). | FEAT-001 / *FEAT-003* | **PARTIAL** | **Backend**: `platform.tenants` table, `Tenant` root entity, slug constraints, optimistic concurrency.<br/>**Gaps**: Tenant onboarding application services, administrative tenant APIs, Next.js tenant portal. |
-| **FR-002** | Multi-Tenant Data Isolation & Scoped Queries | Guarantee strict tenant isolation on all business domain read/write queries via contextual tenant filters, preventing cross-tenant data leakage. | *FEAT-003* | **PARTIAL** | **Backend**: `ITenantEntity` interface in `Domain/Tenants/ITenantEntity.cs`.<br/>**Gaps**: Tenant resolution middleware, `ITenantContextAccessor`, EF Core global query filters (`WHERE TenantId = @id`). |
+| **FR-001** | Tenant Provisioning & Organization Lifecycle | Provision tenant entities, configure subscription tiers, assign administrative owners, and manage tenant lifecycle states (`PendingOnboarding`, `Active`, `Suspended`, `Deactivated`). | FEAT-001 / FEAT-003 | **PARTIAL** | **Backend**: `Tenant`, `TenantService`, `POST /api/v1/tenants`, `GET /api/v1/tenants/me`, `GET/PATCH /api/v1/tenants/{id}`, durable `TenantAuditEvent`.<br/>**Gaps**: Platform-admin HTTP lifecycle routes (`/activate`, `/suspend`, `/deactivate`) blocked pending `FEAT-004`; Next.js tenant portal. |
+| **FR-002** | Multi-Tenant Data Isolation & Scoped Queries | Guarantee strict tenant isolation on all business domain read/write queries via contextual tenant filters, preventing cross-tenant data leakage. | FEAT-003 | **COMPLETE** *(Platform Core)* | **Backend**: `ITenantEntity`, `TenantResolutionMiddleware`, `TenantResolutionService`, `ITenantContextAccessor`, EF Core global query filters & `SaveChanges` write ownership guards.<br/>**Gaps**: Future domain modules (`FEAT-006+`) must implement `ITenantEntity`. |
 | **FR-003** | User Registration & Credential Lifecycle | Secure onboarding of user identities, validation of password complexity (&ge; 12 chars), PBKDF2 credential hashing, transparent rehash, and password change. | FEAT-002 | **PARTIAL** | **Backend**: **COMPLETE** (`POST /api/v1/auth/register`, `POST /api/v1/auth/change-password`, PBKDF2 HMAC-SHA256).<br/>**Gaps**: Web frontend and mobile registration UI. |
 | **FR-004** | User Authentication & Session Management | Authenticate credentials, issue short-lived JWT access tokens (15m) and rotating refresh tokens (7d), enforce rolling lockout (5 attempts / 15m), and handle session revocation. | FEAT-002 | **PARTIAL** | **Backend**: **COMPLETE** (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`, row locking, replay protection).<br/>**Gaps**: Web and mobile login screens. |
 | **FR-005** | Role-Based Access Control (RBAC) & Permissions | Assign roles (SuperAdmin, TenantAdmin, FacilityManager, Technician, Occupant) and validate fine-grained permissions on protected API routes. | *FEAT-004* | **NOT STARTED** | **Backend**: Tenant/User schemas ready; role entities, permission claims, and authorization policies not yet built.<br/>**Gaps**: Entire RBAC module. |
@@ -53,7 +53,7 @@
 
 | Req ID | Requirement Name | Approved Target Standard | Verified State | Audit Finding |
 | :---: | :--- | :--- | :---: | :--- |
-| **NFR-001** | Multi-Tenant Data Isolation | Zero cross-tenant data leakage across all read/write queries | **PARTIAL** | Database schema segmentation and `ITenantEntity` exist; EF Core global query filters and middleware context resolution pending in FEAT-003. |
+| **NFR-001** | Multi-Tenant Data Isolation | Zero cross-tenant data leakage across all read/write queries | **COMPLETE** *(Platform Core)* | Implemented via `ITenantEntity`, `TenantResolutionMiddleware`, EF Core global query filters, and `SaveChanges` write ownership validation (`FEAT-003`). |
 | **NFR-002** | Cryptographic Protection | PBKDF2 password hashing (&ge; 100k iterations), HMAC-SHA256 JWTs, SHA-256 token hashing | **COMPLETE** | Fully implemented in `PasswordSecurityService`, `JwtTokenService`, and `RefreshTokenService`. Verified by 100+ tests. |
 | **NFR-003** | Rate Limiting & DoS Defense | Sliding-window IP limits (Register: 5/min, Login: 10/min, Refresh: 30/min) returning 429 Problem Details | **COMPLETE** | Fully implemented via ASP.NET Core `RateLimiter` middleware with memory-bounded tracking. Verified by integration tests. |
 | **NFR-004** | Audit Trail Integrity | Append-only security audit events with client IP tracking and strict secret redaction | **COMPLETE** | Implemented via `platform.security_audit_events`. Verified by unit and integration tests. |
@@ -76,8 +76,8 @@ flowchart TD
     M1A["Milestone 1A: Database Foundation<br/>(FEAT-001)<br/>STATUS: COMPLETE"]
     M1B["Milestone 1B: Authentication Backend<br/>(FEAT-002 Tasks T1-T8)<br/>STATUS: COMPLETE"]
 
-    M1C["Milestone 1C: Multi-Tenancy Architecture<br/>(PROPOSED: FEAT-003)<br/>PRIORITY: HIGHEST (NEXT)"]
-    M1D["Milestone 1D: RBAC & Authorization<br/>(PROPOSED: FEAT-004)<br/>PRIORITY: HIGH"]
+    M1C["Milestone 1C: Multi-Tenancy Architecture<br/>(FEAT-003 Tasks 3.1-3.6.5)<br/>STATUS: FOUNDATION COMPLETE"]
+    M1D["Milestone 1D: RBAC & Platform Admin<br/>(PROPOSED: FEAT-004)<br/>PRIORITY: HIGHEST (NEXT)"]
     M1E["Milestone 1E: Web & Mobile Auth UI<br/>(PROPOSED: FEAT-005)<br/>PRIORITY: HIGH"]
 
     M2["Milestone 2: Facilities & Asset Catalog<br/>(PROPOSED: FEAT-006, FEAT-007)<br/>PRIORITY: MEDIUM"]
@@ -94,13 +94,12 @@ flowchart TD
 ### Detailed Milestone Breakdown
 
 #### Milestone 1: Core Foundation & Identity Platform (Current Horizon)
-1. **FEAT-003: Multi-Tenancy Architecture & Management (RECOMMENDED NEXT)**
-   - *Dependencies*: FEAT-001, FEAT-002.
-   - *Scope*: Tenant resolution middleware (subdomain/header/JWT claim), `ITenantContextAccessor`, EF Core global query filters (`WHERE TenantId = @id`), tenant onboarding service, and administrative tenant management API endpoints.
-   - *Acceptance Criteria*: Every entity implementing `ITenantEntity` is automatically filtered; cross-tenant query injection is rejected; tenant context is established from authenticated JWT claims.
-2. **FEAT-004: Role-Based Access Control (RBAC) & Administrative Authorization**
+1. **FEAT-003: Multi-Tenancy Architecture & Management (PLANNED FOUNDATION COMPLETE)**
+   - *Completed*: `Tenant`, `TenantMembership`, `TenantAuditEvent`, `ITenantEntity`, `TenantResolutionMiddleware/Service`, `ITenantActorResolver`, EF Core global query filters & write ownership guards, `POST /api/v1/tenants`, `GET /api/v1/tenants/me`, `GET/PATCH /api/v1/tenants/{id}`, `GET /api/v1/tenancy/current`, `ADR-0004`.
+   - *Deferred to FEAT-004*: Platform-admin lifecycle HTTP endpoints (`/activate`, `/suspend`, `/deactivate`) and membership invitation/role-mutation workflows.
+2. **FEAT-004: Role-Based Access Control (RBAC) & Platform Administration (RECOMMENDED NEXT)**
    - *Dependencies*: FEAT-002, FEAT-003.
-   - *Scope*: Define `Role` and `Permission` entities, assign roles per tenant, implement ASP.NET Core authorization policies (`[Authorize(Policy = "Permissions.WorkOrders.Create")]`), expose administrative password reset endpoint (`AuthorizedResetPasswordAsync`).
+   - *Scope*: Authoritative platform-admin identity & claims (`IsPlatformAdmin`), fine-grained tenant RBAC policies (`Permissions.*`), unblocking tenant activation/suspension/deactivation HTTP APIs, membership invitation/addition/role-mutation/revocation workflows, authorization audit logging, and administrative password reset (`AuthorizedResetPasswordAsync`).
    - *Acceptance Criteria*: Role-based permissions enforced across Minimal API endpoints; administrative password reset endpoint secured by verified Admin permission.
 3. **FEAT-005: Next.js Web Authentication UI & Session Client**
    - *Dependencies*: FEAT-002, FEAT-004.
