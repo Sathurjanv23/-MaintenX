@@ -38,3 +38,24 @@ Platform permissions are strictly separated from `TenantMembershipRole` (`Owner`
 | `tenant.members.revoke` | `Tenant` | Permanently revoke a membership | Yes | Yes | No | Defined in catalog; Step 4.6/4.7 must enforce last-owner protection & Owner protection |
 | `tenant.ownership.transfer` | `Tenant` | Transfer primary organization ownership | Yes | No | No | Defined in catalog; atomic transfer workflow pending (Step 4.7) |
 | `tenant.audit.read` | `Tenant` | View tenant-scoped audit events (`TD-04`) | Yes | Yes | No | Defined in catalog; authorized audit endpoint deferred |
+
+---
+
+## 3. Privilege Assignment Domain Invariants (Task 4.1.3)
+
+> [!NOTE]
+> The rules below are enforced at the **Domain layer** (`PlatformRoleGrant`, `PlatformRolePermissionMap`, `TenantPrivilegeRules`, `PlatformPrivilegeRules`). Runtime actor verification, EF Core persistence, and multi-record transactional serialization belong to Steps `4.2`–`4.8`.
+
+### 3.1 Platform Grant Model
+- **Roles**: `PlatformRole.PlatformAdministrator` (strictly global; zero `TenantId`).
+- **States**: `Active` -> `Revoked` (terminal; repeated revocation is idempotent; re-granting requires a new `PlatformRoleGrant`).
+- **Concurrency**: Entity `Version` starts at `1` and increments once on revocation; rejected mutations preserve state.
+- **Last Platform Admin Protection**: `PlatformPrivilegeRules.CanRevokeGrant` requires at least 1 other distinct active `PlatformAdministrator` user.
+
+### 3.2 Tenant Role Hierarchy & Invitation Boundaries
+- **Role Assignment (`tenant.members.roles.assign`)**: Only `Owner` may assign roles (`Administrator`/`Member` denied). Cannot assign `Owner` via ordinary role assignment (must use ownership transfer), cannot self-mutate, and cannot demote the last active `Owner`.
+- **Invitations (`tenant.members.invite`)**: `Owner` may invite `Administrator` or `Member`; `Administrator` may invite `Member` only; neither may invite `Owner`.
+- **Membership Suspension / Restoration / Revocation**: `Administrator` cannot suspend, restore, or revoke `Owner` or another `Administrator` (only `Member`).
+- **Last Active Owner Protection**: `TenantPrivilegeRules.CountRemainingActiveOwnersExcluding` counts distinct `UserId`s with `Role == Owner && Status == Active` in the exact `TenantId`. `Pending`, `Suspended`, `Revoked`, duplicate, or cross-tenant records do not satisfy the invariant.
+- **Ownership Transfer (`tenant.ownership.transfer`)**: Requires `Active` tenant, `Active` source `Owner`, `Active` non-`Owner` recipient in the same tenant, and distinct `UserId`.
+- **Future Concurrency Requirement**: Entity-level `Version` tokens alone do not prevent concurrent multi-row last-owner / last-platform-admin removals; Steps `4.3`–`4.7` must enforce tenant-wide/global serialization locks (`SELECT ... FOR UPDATE` or serializable transactions).
