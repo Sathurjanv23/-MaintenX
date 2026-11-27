@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Security;
 using MaintenX.Api.Application.Tenancy.Context;
 using MaintenX.Api.Domain.Auth;
+using MaintenX.Api.Domain.Authorization;
 using MaintenX.Api.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -59,6 +60,11 @@ public class MaintenXDbContext : DbContext
     /// Tenant audit events database set for durable lifecycle and administrative tracking.
     /// </summary>
     public DbSet<TenantAuditEvent> TenantAuditEvents => Set<TenantAuditEvent>();
+
+    /// <summary>
+    /// Authoritative global platform role grants database set (not tenant-scoped).
+    /// </summary>
+    public DbSet<PlatformRoleGrant> PlatformRoleGrants => Set<PlatformRoleGrant>();
 
     /// <summary>
     /// Currently resolved tenant identifier from the request scope, or null if uncontexted.
