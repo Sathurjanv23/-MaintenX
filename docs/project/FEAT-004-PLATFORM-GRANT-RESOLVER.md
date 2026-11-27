@@ -22,16 +22,16 @@
 ## 2. Application Contract & Trusted Authentication Boundary
 
 - **Contract:** `MaintenX.Api.Application.Authorization.Services.IPlatformGrantResolver`
-  - `Task<PlatformGrantResolutionResult> ResolveAsync(ClaimsPrincipal? principal, PermissionKey? permission, CancellationToken cancellationToken = default)`
+  - `Task<PlatformGrantResolutionResult> ResolveAsync(PermissionKey? permission, CancellationToken cancellationToken = default)`
 - **Result:** `PlatformGrantResolutionResult` (`IsAllowed`, `UserId`, `GrantId`, `Role`, `Permission`, `DenialReason`) with `private` constructor and `internal static` `Allow(...)` / `Deny(...)` factories so external callers cannot manufacture trusted authorization evidence.
-- **Trusted Authentication Boundary:** `PlatformGrantResolver` requires `principal?.Identity is ClaimsIdentity identity && identity.IsAuthenticated && !string.IsNullOrWhiteSpace(identity.AuthenticationType)` and extracts non-ambiguous `sub` (or `NameIdentifier`), `sid`, and `sst` claims. It never trusts request headers, query/body fields, client-supplied role claims, or caller-supplied `PlatformRoleGrant` / `IsPlatformAdmin` values. In-process callers must only pass `ClaimsPrincipal` instances produced by ASP.NET Core's configured JWT bearer authentication middleware.
+- **Trusted Authentication Boundary (Remediated in `FEAT-004-SEC-001`):** `PlatformGrantResolver` no longer accepts caller-supplied `ClaimsPrincipal` instances. It obtains the current `HttpContext` from `IHttpContextAccessor` and invokes `IAuthenticationService.AuthenticateAsync(httpContext, JwtBearerDefaults.AuthenticationScheme)` directly, requiring `authResult.Succeeded`, a non-null `AuthenticationTicket` with scheme `"Bearer"`, and **exactly one** authenticated `ClaimsIdentity`. It never trusts `HttpContext.User` alone, untrusted schemes, request headers, query/body fields, client-supplied role claims, or caller-supplied `PlatformRoleGrant` / `IsPlatformAdmin` values.
 
 ---
 
 ## 3. Authoritative Verification Pipeline (Non-Caching, Fail-Closed)
 
 1. **Permission Validation:** Rejects `null`, unregistered, or non-`Platform` permissions using `PermissionCatalog.IsRegistered` and `AuthorizationScopeKind.Platform` (exact match only; no wildcards).
-2. **Identity & Claim Ambiguity:** Rejects unauthenticated principals, missing authentication type, missing/empty/malformed `sub` or `sid`, missing/whitespace `sst`, and duplicate claims of the same type or conflicting values.
+2. **Server-Controlled Bearer Provenance & Claim Ambiguity:** Rejects missing `HttpContext`, failed/`NoResult` `AuthenticateAsync(..., "Bearer")`, untrusted authentication schemes, multiple authenticated `ClaimsIdentity` instances, missing/empty/malformed `sub` or `sid`, missing/whitespace `sst`, and duplicate claims of the same type or conflicting values.
 3. **Current Account Eligibility:** Queries `MaintenXDbContext.Users.AsNoTracking()` directly (bypassing the 60s `IMemoryCache` in `SecurityStampValidator` so account suspension, deactivation, or security stamp rotation takes effect immediately). Rejects nonexistent users, `Status != UserStatus.Active`, and constant-time (`CryptographicOperations.FixedTimeEquals`) `SecurityStamp` mismatches.
 4. **Current Session Validity:** Queries `MaintenXDbContext.UserSessions.AsNoTracking()` directly using `TimeProvider.GetUtcNow().UtcDateTime`. Rejects missing, wrong-user (`session.UserId != userId`), revoked (`RevokedAtUtc is not null`), or expired (`ExpiresAtUtc <= utcNow`) sessions without extending session lifetime.
 5. **Authoritative Grant Lookup:** Queries `MaintenXDbContext.PlatformRoleGrants.AsNoTracking()` (`UserId == userId && Status == PlatformRoleGrantStatus.Active`). Takes up to 2 rows: denies if `0` (`NoActivePlatformGrant`) and fails closed if `> 1` (`AmbiguousActivePlatformGrants`). Evaluates `PlatformRolePermissionMap.CanAuthorize(grant, permission)`.
