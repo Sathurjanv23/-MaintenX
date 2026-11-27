@@ -21,7 +21,7 @@ The system is constructed as a **Modular Monolith** using ASP.NET Core on .NET 1
 - **Milestone 1A (Database Foundation)**: **100% COMPLETE** (FEAT-001).
 - **Milestone 1B (Authentication & Session Backend)**: **100% COMPLETE** (FEAT-002 Tasks T1 through T8).
 - **Milestone 1C (Multi-Tenancy Architecture & Management)**: **PLANNED FOUNDATION COMPLETE** (FEAT-003 Tasks 3.1 through 3.6.5 merged via PRs #24–#38; Step 3.7 architecture & `ADR-0004` pending review; platform-admin lifecycle HTTP routes deferred to FEAT-004).
-- **Milestone 1D (RBAC, Platform Admin & Frontend/Mobile Auth UI)**: **NOT STARTED** (FEAT-004 RBAC is next; FEAT-005 Web/Mobile UI follows).
+- **Milestone 1D (RBAC, Platform Admin & Frontend/Mobile Auth UI)**: **IN PROGRESS** (FEAT-004 Step 4.1 RBAC Domain Foundation and Step 4.2 `PlatformRoleGrant` PostgreSQL Persistence & Security Verification complete; Steps 4.3–4.8 runtime authorization, provisioning, and FEAT-005 Web/Mobile UI pending).
 - **Milestones 2–5 (Facilities, Assets, Work Orders, Maintenance Schedules, Notifications)**: **NOT STARTED** (Architecture planned).
 
 ---
