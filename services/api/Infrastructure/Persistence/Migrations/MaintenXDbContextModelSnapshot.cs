@@ -126,7 +126,7 @@ namespace MaintenX.Api.Infrastructure.Persistence.Migrations
 
                     b.ToTable("security_audit_events", "platform", t =>
                         {
-                            t.HasCheckConstraint("ck_security_audit_events_event_type", "event_type IN ('UserRegistered', 'LoginSuccess', 'LoginFailed', 'AccountLockedOut', 'TokenRefreshed', 'TokenReplayDetected', 'SessionRevoked', 'PasswordChanged', 'SecurityStampRotated', 'UserSuspended', 'UserReactivated', 'UserDeactivated')");
+                            t.HasCheckConstraint("ck_security_audit_events_event_type", "event_type IN ('UserRegistered', 'LoginSuccess', 'LoginFailed', 'AccountLockedOut', 'TokenRefreshed', 'TokenReplayDetected', 'SessionRevoked', 'PasswordChanged', 'SecurityStampRotated', 'UserSuspended', 'UserReactivated', 'UserDeactivated', 'PlatformAdministratorBootstrapped')");
                         });
                 });
 
@@ -269,7 +269,18 @@ namespace MaintenX.Api.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("granted_at_utc");
 
-                    b.Property<Guid>("GrantedByUserId")
+                    b.Property<string>("GrantedByActorKind")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("granted_by_actor_kind");
+
+                    b.Property<string>("GrantedByOperatorId")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("granted_by_operator_id");
+
+                    b.Property<Guid?>("GrantedByUserId")
                         .HasColumnType("uuid")
                         .HasColumnName("granted_by_user_id");
 
@@ -323,7 +334,9 @@ namespace MaintenX.Api.Infrastructure.Persistence.Migrations
 
                     b.ToTable("platform_role_grants", "platform", t =>
                         {
-                            t.HasCheckConstraint("ck_platform_role_grants_granted_by_non_empty", "granted_by_user_id <> '00000000-0000-0000-0000-000000000000'");
+                            t.HasCheckConstraint("ck_platform_role_grants_granted_actor_consistency", "(granted_by_actor_kind = 'User' AND granted_by_user_id IS NOT NULL AND granted_by_user_id <> '00000000-0000-0000-0000-000000000000' AND granted_by_operator_id IS NULL) OR (granted_by_actor_kind = 'DeploymentOperator' AND granted_by_user_id IS NULL AND granted_by_operator_id IS NOT NULL AND char_length(btrim(granted_by_operator_id, chr(32) || chr(9) || chr(10) || chr(13) || chr(11) || chr(12) || chr(160) || chr(5760) || chr(8192) || chr(8193) || chr(8194) || chr(8195) || chr(8196) || chr(8197) || chr(8198) || chr(8199) || chr(8200) || chr(8201) || chr(8202) || chr(8232) || chr(8233) || chr(8239) || chr(8287) || chr(12288))) >= 3 AND char_length(granted_by_operator_id) <= 200)");
+
+                            t.HasCheckConstraint("ck_platform_role_grants_granted_by_actor_kind", "granted_by_actor_kind IN ('User', 'DeploymentOperator')");
 
                             t.HasCheckConstraint("ck_platform_role_grants_id_non_empty", "id <> '00000000-0000-0000-0000-000000000000'");
 

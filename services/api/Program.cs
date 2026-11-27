@@ -1,4 +1,5 @@
 using MaintenX.Api.Application.Authorization;
+using MaintenX.Api.Application.Authorization.Services;
 using MaintenX.Api.Application.Tenancy;
 using MaintenX.Api.Common.Errors;
 using MaintenX.Api.Common.Health;
@@ -164,6 +165,15 @@ app.MapGet("/api/v1/info", async (HttpContext context, IHostEnvironment env) =>
     };
     await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(data, options));
 }).WithName("GetApiInfo").WithTags("System").AllowAnonymous().DisableRateLimiting();
+
+// -----------------------------------------------------------------------------
+// Restricted One-Shot Operational Bootstrap Mode (Does NOT start HTTP server)
+// -----------------------------------------------------------------------------
+if (args.Contains(PlatformAdminBootstrapCommand.CommandFlag, StringComparer.Ordinal))
+{
+    Environment.ExitCode = await PlatformAdminBootstrapCommand.ExecuteAsync(app.Services, args);
+    return;
+}
 
 // -----------------------------------------------------------------------------
 // Module Endpoint Discovery & Registration

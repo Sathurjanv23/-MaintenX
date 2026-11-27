@@ -55,9 +55,20 @@ public sealed class PlatformRoleGrantConfiguration : IEntityTypeConfiguration<Pl
             .HasColumnType("timestamp with time zone")
             .IsRequired();
 
+        builder.Property(g => g.GrantedByActorKind)
+            .HasColumnName("granted_by_actor_kind")
+            .HasMaxLength(50)
+            .HasConversion<string>()
+            .IsRequired();
+
         builder.Property(g => g.GrantedByUserId)
             .HasColumnName("granted_by_user_id")
-            .IsRequired();
+            .IsRequired(false);
+
+        builder.Property(g => g.GrantedByOperatorId)
+            .HasColumnName("granted_by_operator_id")
+            .HasMaxLength(PlatformRoleGrant.MaxOperatorIdLength)
+            .IsRequired(false);
 
         // 6. Revocation Attribution & Timestamps (Nullable for Active grants)
         builder.Property(g => g.RevokedAtUtc)
@@ -108,8 +119,13 @@ public sealed class PlatformRoleGrantConfiguration : IEntityTypeConfiguration<Pl
                 "user_id <> '00000000-0000-0000-0000-000000000000'");
 
             t.HasCheckConstraint(
-                "ck_platform_role_grants_granted_by_non_empty",
-                "granted_by_user_id <> '00000000-0000-0000-0000-000000000000'");
+                "ck_platform_role_grants_granted_by_actor_kind",
+                "granted_by_actor_kind IN ('User', 'DeploymentOperator')");
+
+            t.HasCheckConstraint(
+                "ck_platform_role_grants_granted_actor_consistency",
+                "(granted_by_actor_kind = 'User' AND granted_by_user_id IS NOT NULL AND granted_by_user_id <> '00000000-0000-0000-0000-000000000000' AND granted_by_operator_id IS NULL) OR " +
+                "(granted_by_actor_kind = 'DeploymentOperator' AND granted_by_user_id IS NULL AND granted_by_operator_id IS NOT NULL AND char_length(btrim(granted_by_operator_id, chr(32) || chr(9) || chr(10) || chr(13) || chr(11) || chr(12) || chr(160) || chr(5760) || chr(8192) || chr(8193) || chr(8194) || chr(8195) || chr(8196) || chr(8197) || chr(8198) || chr(8199) || chr(8200) || chr(8201) || chr(8202) || chr(8232) || chr(8233) || chr(8239) || chr(8287) || chr(12288))) >= 3 AND char_length(granted_by_operator_id) <= 200)");
 
             t.HasCheckConstraint(
                 "ck_platform_role_grants_role",

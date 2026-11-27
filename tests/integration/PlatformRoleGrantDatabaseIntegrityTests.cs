@@ -96,7 +96,8 @@ public class PlatformRoleGrantDatabaseIntegrityTests : IAsyncLifetime
         DateTime? revokedAtUtc = null,
         Guid? revokedByUserId = null,
         string? revocationReason = null,
-        long? version = 1)
+        long? version = 1,
+        string? grantedByActorKind = "User")
     {
         using var conn = new NpgsqlConnection(_isolatedConnectionString);
         await conn.OpenAsync();
@@ -104,15 +105,16 @@ public class PlatformRoleGrantDatabaseIntegrityTests : IAsyncLifetime
         using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
             INSERT INTO platform.platform_role_grants
-                (id, user_id, role, status, granted_at_utc, granted_by_user_id, revoked_at_utc, revoked_by_user_id, revocation_reason, version)
+                (id, user_id, role, status, granted_at_utc, granted_by_actor_kind, granted_by_user_id, revoked_at_utc, revoked_by_user_id, revocation_reason, version)
             VALUES
-                (@id, @user_id, @role, @status, @granted_at_utc, @granted_by_user_id, @revoked_at_utc, @revoked_by_user_id, @revocation_reason, @version);";
+                (@id, @user_id, @role, @status, @granted_at_utc, @granted_by_actor_kind, @granted_by_user_id, @revoked_at_utc, @revoked_by_user_id, @revocation_reason, @version);";
 
         cmd.Parameters.AddWithValue("id", id);
         cmd.Parameters.AddWithValue("user_id", userId);
         cmd.Parameters.AddWithValue("role", (object?)role ?? DBNull.Value);
         cmd.Parameters.AddWithValue("status", (object?)status ?? DBNull.Value);
         cmd.Parameters.AddWithValue("granted_at_utc", (object?)grantedAtUtc ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("granted_by_actor_kind", (object?)grantedByActorKind ?? DBNull.Value);
         cmd.Parameters.AddWithValue("granted_by_user_id", (object?)grantedByUserId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("revoked_at_utc", (object?)revokedAtUtc ?? DBNull.Value);
         cmd.Parameters.AddWithValue("revoked_by_user_id", (object?)revokedByUserId ?? DBNull.Value);
@@ -150,7 +152,7 @@ public class PlatformRoleGrantDatabaseIntegrityTests : IAsyncLifetime
                 reader.IsDBNull(3) ? null : reader.GetInt32(3));
         }
 
-        Assert.Equal(10, columns.Count);
+        Assert.Equal(12, columns.Count);
         Assert.False(columns.ContainsKey("tenant_id"));
         Assert.False(columns.ContainsKey("is_active"));
 
@@ -159,7 +161,9 @@ public class PlatformRoleGrantDatabaseIntegrityTests : IAsyncLifetime
         Assert.Equal(("character varying", "NO", 50), columns["role"]);
         Assert.Equal(("character varying", "NO", 50), columns["status"]);
         Assert.Equal(("timestamp with time zone", "NO", null), columns["granted_at_utc"]);
-        Assert.Equal(("uuid", "NO", null), columns["granted_by_user_id"]);
+        Assert.Equal(("character varying", "NO", 50), columns["granted_by_actor_kind"]);
+        Assert.Equal(("uuid", "YES", null), columns["granted_by_user_id"]);
+        Assert.Equal(("character varying", "YES", 200), columns["granted_by_operator_id"]);
         Assert.Equal(("timestamp with time zone", "YES", null), columns["revoked_at_utc"]);
         Assert.Equal(("uuid", "YES", null), columns["revoked_by_user_id"]);
         Assert.Equal(("character varying", "YES", 500), columns["revocation_reason"]);
@@ -199,7 +203,8 @@ public class PlatformRoleGrantDatabaseIntegrityTests : IAsyncLifetime
         {
             "ck_platform_role_grants_id_non_empty",
             "ck_platform_role_grants_user_id_non_empty",
-            "ck_platform_role_grants_granted_by_non_empty",
+            "ck_platform_role_grants_granted_by_actor_kind",
+            "ck_platform_role_grants_granted_actor_consistency",
             "ck_platform_role_grants_role",
             "ck_platform_role_grants_status",
             "ck_platform_role_grants_version_positive",
@@ -258,11 +263,11 @@ public class PlatformRoleGrantDatabaseIntegrityTests : IAsyncLifetime
         Assert.Equal("23514", exUser.SqlState);
         Assert.Equal("ck_platform_role_grants_user_id_non_empty", exUser.ConstraintName);
 
-        // Empty granted_by_user_id
+        // Empty granted_by_user_id for User actor
         var exGrantedBy = await Assert.ThrowsAsync<PostgresException>(() =>
             ExecuteRawGrantInsertAsync(Guid.NewGuid(), user.Id, "PlatformAdministrator", "Active", now, Guid.Empty));
         Assert.Equal("23514", exGrantedBy.SqlState);
-        Assert.Equal("ck_platform_role_grants_granted_by_non_empty", exGrantedBy.ConstraintName);
+        Assert.Equal("ck_platform_role_grants_granted_actor_consistency", exGrantedBy.ConstraintName);
 
         // Empty revoked_by_user_id on Revoked grant
         var exRevokedBy = await Assert.ThrowsAsync<PostgresException>(() =>
@@ -319,9 +324,14 @@ public class PlatformRoleGrantDatabaseIntegrityTests : IAsyncLifetime
             ExecuteRawGrantInsertAsync(Guid.NewGuid(), user.Id, "PlatformAdministrator", "Active", null, user.Id));
         Assert.Equal("23502", exGrantedAt.SqlState);
 
-        var exGrantedBy = await Assert.ThrowsAsync<PostgresException>(() =>
+        var exGrantedByActorKind = await Assert.ThrowsAsync<PostgresException>(() =>
+            ExecuteRawGrantInsertAsync(Guid.NewGuid(), user.Id, "PlatformAdministrator", "Active", now, user.Id, grantedByActorKind: null));
+        Assert.Equal("23502", exGrantedByActorKind.SqlState);
+
+        var exGrantedByUserNull = await Assert.ThrowsAsync<PostgresException>(() =>
             ExecuteRawGrantInsertAsync(Guid.NewGuid(), user.Id, "PlatformAdministrator", "Active", now, null));
-        Assert.Equal("23502", exGrantedBy.SqlState);
+        Assert.Equal("23514", exGrantedByUserNull.SqlState);
+        Assert.Equal("ck_platform_role_grants_granted_actor_consistency", exGrantedByUserNull.ConstraintName);
 
         var exVersion = await Assert.ThrowsAsync<PostgresException>(() =>
             ExecuteRawGrantInsertAsync(Guid.NewGuid(), user.Id, "PlatformAdministrator", "Active", now, user.Id, version: null));

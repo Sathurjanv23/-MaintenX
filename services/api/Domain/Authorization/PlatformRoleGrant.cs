@@ -12,6 +12,8 @@ public sealed class PlatformRoleGrant
 {
     public const int MinRevocationReasonLength = 3;
     public const int MaxRevocationReasonLength = 500;
+    public const int MinOperatorIdLength = 3;
+    public const int MaxOperatorIdLength = 200;
 
     /// <summary>
     /// Unique identifier of this platform role grant.
@@ -39,9 +41,19 @@ public sealed class PlatformRoleGrant
     public DateTime GrantedAtUtc { get; private set; }
 
     /// <summary>
-    /// Identifier of the verified actor or bootstrap operator that issued the grant.
+    /// Category of the authoritative actor that issued this grant.
     /// </summary>
-    public Guid GrantedByUserId { get; private set; }
+    public GrantActorKind GrantedByActorKind { get; private set; }
+
+    /// <summary>
+    /// Identifier of the verified user actor that issued the grant, or <c>null</c> for deployment-operator bootstrap.
+    /// </summary>
+    public Guid? GrantedByUserId { get; private set; }
+
+    /// <summary>
+    /// Verified operational environment identifier for deployment-operator bootstrap, or <c>null</c> for user actors.
+    /// </summary>
+    public string? GrantedByOperatorId { get; private set; }
 
     /// <summary>
     /// UTC timestamp when the grant was revoked, or <c>null</c> if active.
@@ -108,7 +120,63 @@ public sealed class PlatformRoleGrant
             Role = role,
             Status = PlatformRoleGrantStatus.Active,
             GrantedAtUtc = utcNow,
+            GrantedByActorKind = GrantActorKind.User,
             GrantedByUserId = grantedByUserId,
+            GrantedByOperatorId = null,
+            RevokedAtUtc = null,
+            RevokedByUserId = null,
+            RevocationReason = null,
+            Version = 1
+        };
+    }
+
+    /// <summary>
+    /// Creates an initial bootstrap <see cref="PlatformRoleGrant"/> attributed to an authorized deployment operator.
+    /// </summary>
+    public static PlatformRoleGrant CreateForBootstrap(
+        Guid userId,
+        PlatformRole role,
+        string operatorIdentity,
+        DateTime utcNow)
+    {
+        if (userId == Guid.Empty)
+        {
+            throw new ArgumentException("Target UserId cannot be empty.", nameof(userId));
+        }
+
+        if (string.IsNullOrWhiteSpace(operatorIdentity))
+        {
+            throw new ArgumentException("Operator identity cannot be empty.", nameof(operatorIdentity));
+        }
+
+        var trimmedOperator = operatorIdentity.Trim();
+        if (trimmedOperator.Length < MinOperatorIdLength || trimmedOperator.Length > MaxOperatorIdLength)
+        {
+            throw new ArgumentException(
+                $"Operator identity must be between {MinOperatorIdLength} and {MaxOperatorIdLength} characters.",
+                nameof(operatorIdentity));
+        }
+
+        if (!Enum.IsDefined(role))
+        {
+            throw new ArgumentException($"Invalid PlatformRole: '{role}'.", nameof(role));
+        }
+
+        if (utcNow.Kind != DateTimeKind.Utc)
+        {
+            throw new ArgumentException("Grant timestamp must be in UTC.", nameof(utcNow));
+        }
+
+        return new PlatformRoleGrant
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Role = role,
+            Status = PlatformRoleGrantStatus.Active,
+            GrantedAtUtc = utcNow,
+            GrantedByActorKind = GrantActorKind.DeploymentOperator,
+            GrantedByUserId = null,
+            GrantedByOperatorId = trimmedOperator,
             RevokedAtUtc = null,
             RevokedByUserId = null,
             RevocationReason = null,
