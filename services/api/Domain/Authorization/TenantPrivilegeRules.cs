@@ -64,7 +64,7 @@ public static class TenantPrivilegeRules
 
         if (target.Role == TenantMembershipRole.Owner &&
             target.Status == TenantMembershipStatus.Active &&
-            CountRemainingActiveOwnersExcluding(currentTenantMemberships, actor.TenantId, target.Id) < 1)
+            CountRemainingActiveOwnersExcluding(currentTenantMemberships, actor.TenantId, target.UserId) < 1)
         {
             return PrivilegeCheckResult.Denied("Cannot demote the last active Owner of the tenant organization.");
         }
@@ -159,7 +159,7 @@ public static class TenantPrivilegeRules
         }
 
         if (target.Role == TenantMembershipRole.Owner &&
-            CountRemainingActiveOwnersExcluding(currentTenantMemberships, actor.TenantId, target.Id) < 1)
+            CountRemainingActiveOwnersExcluding(currentTenantMemberships, actor.TenantId, target.UserId) < 1)
         {
             return PrivilegeCheckResult.Denied("Cannot suspend the last active Owner of the tenant organization.");
         }
@@ -259,7 +259,7 @@ public static class TenantPrivilegeRules
 
         if (target.Role == TenantMembershipRole.Owner &&
             target.Status == TenantMembershipStatus.Active &&
-            CountRemainingActiveOwnersExcluding(currentTenantMemberships, actor.TenantId, target.Id) < 1)
+            CountRemainingActiveOwnersExcluding(currentTenantMemberships, actor.TenantId, target.UserId) < 1)
         {
             return PrivilegeCheckResult.Denied("Cannot revoke the last active Owner of the tenant organization.");
         }
@@ -325,20 +325,21 @@ public static class TenantPrivilegeRules
 
     /// <summary>
     /// Counts distinct users holding an Active <see cref="TenantMembershipRole.Owner"/> membership
-    /// in <paramref name="tenantId"/> excluding <paramref name="excludedMembershipId"/>.
-    /// Pending, Suspended, Revoked, cross-tenant, and duplicate records do not count.
+    /// in <paramref name="tenantId"/> excluding <paramref name="excludedUserId"/>.
+    /// Pending, Suspended, Revoked, cross-tenant, and duplicate records for the excluded user do not count.
     /// </summary>
     public static int CountRemainingActiveOwnersExcluding(
         IReadOnlyCollection<TenantMembership> memberships,
         Guid tenantId,
-        Guid excludedMembershipId)
+        Guid excludedUserId)
     {
         ArgumentNullException.ThrowIfNull(memberships);
 
         return memberships
             .Where(m => m is not null
                         && m.TenantId == tenantId
-                        && m.Id != excludedMembershipId
+                        && m.UserId != excludedUserId
+                        && m.UserId != Guid.Empty
                         && m.Role == TenantMembershipRole.Owner
                         && m.Status == TenantMembershipStatus.Active)
             .Select(m => m.UserId)
