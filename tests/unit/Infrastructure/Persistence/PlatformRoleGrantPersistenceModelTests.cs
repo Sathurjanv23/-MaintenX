@@ -70,9 +70,17 @@ public class PlatformRoleGrantPersistenceModelTests
         Assert.Equal("timestamp with time zone", grantedAt.GetColumnType());
         Assert.False(grantedAt.IsNullable);
 
+        var grantedByActorKind = entityType.FindProperty(nameof(PlatformRoleGrant.GrantedByActorKind))!;
+        Assert.Equal("granted_by_actor_kind", grantedByActorKind.GetColumnName());
+        Assert.False(grantedByActorKind.IsNullable);
+
         var grantedBy = entityType.FindProperty(nameof(PlatformRoleGrant.GrantedByUserId))!;
         Assert.Equal("granted_by_user_id", grantedBy.GetColumnName());
-        Assert.False(grantedBy.IsNullable);
+        Assert.True(grantedBy.IsNullable);
+
+        var grantedByOp = entityType.FindProperty(nameof(PlatformRoleGrant.GrantedByOperatorId))!;
+        Assert.Equal("granted_by_operator_id", grantedByOp.GetColumnName());
+        Assert.True(grantedByOp.IsNullable);
 
         var revokedAt = entityType.FindProperty(nameof(PlatformRoleGrant.RevokedAtUtc))!;
         Assert.Equal("revoked_at_utc", revokedAt.GetColumnName());
@@ -120,7 +128,8 @@ public class PlatformRoleGrantPersistenceModelTests
         var checkNames = entityType.GetCheckConstraints().Select(c => c.Name).ToHashSet();
         Assert.Contains("ck_platform_role_grants_id_non_empty", checkNames);
         Assert.Contains("ck_platform_role_grants_user_id_non_empty", checkNames);
-        Assert.Contains("ck_platform_role_grants_granted_by_non_empty", checkNames);
+        Assert.Contains("ck_platform_role_grants_granted_by_actor_kind", checkNames);
+        Assert.Contains("ck_platform_role_grants_granted_actor_consistency", checkNames);
         Assert.Contains("ck_platform_role_grants_role", checkNames);
         Assert.Contains("ck_platform_role_grants_status", checkNames);
         Assert.Contains("ck_platform_role_grants_version_positive", checkNames);

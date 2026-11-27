@@ -88,7 +88,7 @@ public sealed class SecurityAuditEventConfiguration : IEntityTypeConfiguration<S
         {
             t.HasCheckConstraint(
                 "ck_security_audit_events_event_type",
-                "event_type IN ('UserRegistered', 'LoginSuccess', 'LoginFailed', 'AccountLockedOut', 'TokenRefreshed', 'TokenReplayDetected', 'SessionRevoked', 'PasswordChanged', 'SecurityStampRotated', 'UserSuspended', 'UserReactivated', 'UserDeactivated')");
+                "event_type IN ('UserRegistered', 'LoginSuccess', 'LoginFailed', 'AccountLockedOut', 'TokenRefreshed', 'TokenReplayDetected', 'SessionRevoked', 'PasswordChanged', 'SecurityStampRotated', 'UserSuspended', 'UserReactivated', 'UserDeactivated', 'PlatformAdministratorBootstrapped')");
         });
     }
 

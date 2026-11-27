@@ -18,6 +18,8 @@ public static class AuthorizationServiceExtensions
 
         services.AddHttpContextAccessor();
         services.AddScoped<IPlatformGrantResolver, PlatformGrantResolver>();
+        services.AddScoped<IBootstrapOperatorAuthorizationProvider, HostBootstrapOperatorAuthorizationProvider>();
+        services.AddScoped<IPlatformAdminBootstrapService, PlatformAdminBootstrapService>();
         return services;
     }
 }

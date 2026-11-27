@@ -340,15 +340,17 @@ public class PlatformRoleGrantPersistenceSecurityTests : IAsyncLifetime
                 var u1 = User.Create("corr.u1@maintenx.internal", "hash", UserStatus.Active, now);
                 var u2 = User.Create("corr.u2@maintenx.internal", "hash", UserStatus.Active, now);
                 seedCtx.Users.AddRange(u1, u2);
-
-                var activeGrant = PlatformRoleGrant.Create(u1.Id, PlatformRole.PlatformAdministrator, u2.Id, now);
-                var revokedGrant = PlatformRoleGrant.Create(u2.Id, PlatformRole.PlatformAdministrator, u1.Id, now);
-                revokedGrant.Revoke(u1.Id, "Valid historical revocation", now.AddMinutes(1));
-                seedCtx.PlatformRoleGrants.AddRange(activeGrant, revokedGrant);
-
                 await seedCtx.SaveChangesAsync();
-                activeId = activeGrant.Id;
-                revokedId = revokedGrant.Id;
+
+                activeId = Guid.NewGuid();
+                revokedId = Guid.NewGuid();
+
+                await seedCtx.Database.ExecuteSqlInterpolatedAsync($@"
+                    INSERT INTO platform.platform_role_grants
+                        (id, user_id, role, status, granted_at_utc, granted_by_user_id, revoked_at_utc, revoked_by_user_id, revocation_reason, version)
+                    VALUES
+                        ({activeId}, {u1.Id}, 'PlatformAdministrator', 'Active', {now}, {u2.Id}, NULL, NULL, NULL, 1),
+                        ({revokedId}, {u2.Id}, 'PlatformAdministrator', 'Revoked', {now}, {u1.Id}, {now.AddMinutes(1)}, {u1.Id}, 'Valid historical revocation', 2);");
             }
 
             using (var upgradeCtx = new MaintenXDbContext(options))

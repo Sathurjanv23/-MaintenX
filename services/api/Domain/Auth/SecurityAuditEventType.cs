@@ -63,5 +63,10 @@ public enum SecurityAuditEventType
     /// <summary>
     /// User account was permanently deactivated.
     /// </summary>
-    UserDeactivated = 12
+    UserDeactivated = 12,
+
+    /// <summary>
+    /// Initial Platform Administrator grant was provisioned by an authorized deployment operator.
+    /// </summary>
+    PlatformAdministratorBootstrapped = 13
 }
