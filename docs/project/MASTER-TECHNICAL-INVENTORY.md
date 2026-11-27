@@ -109,6 +109,7 @@ services/api/
 └── Infrastructure/
     └── Persistence/
         ├── Configurations/                              # EF Core IEntityTypeConfiguration mappings
+        │   ├── PlatformRoleGrantConfiguration.cs        # Global platform.platform_role_grants mapping (FEAT-004)
         │   ├── RefreshTokenConfiguration.cs
         │   ├── SecurityAuditEventConfiguration.cs
         │   ├── TenantAuditEventConfiguration.cs
