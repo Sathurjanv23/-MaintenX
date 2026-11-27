@@ -8,25 +8,36 @@ using MaintenX.Api.Application.Authorization.Contracts;
 using MaintenX.Api.Domain.Auth;
 using MaintenX.Api.Domain.Authorization;
 using MaintenX.Api.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Fail-closed, non-caching authoritative resolver for platform-scoped permissions.
-/// Queries current <see cref="User"/>, <see cref="UserSession"/>, and <see cref="PlatformRoleGrant"/>
-/// database state on every evaluation.
+/// Obtains identity exclusively from <see cref="IAuthenticationService.AuthenticateAsync"/>
+/// using <see cref="JwtBearerDefaults.AuthenticationScheme"/> on the current server-controlled
+/// <see cref="HttpContext"/>, then verifies current <see cref="User"/>, <see cref="UserSession"/>,
+/// and <see cref="PlatformRoleGrant"/> database state on every evaluation.
 /// </summary>
 public sealed class PlatformGrantResolver : IPlatformGrantResolver
 {
+    private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IAuthenticationService _authenticationService;
     private readonly MaintenXDbContext _dbContext;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PlatformGrantResolver> _logger;
 
     public PlatformGrantResolver(
+        IHttpContextAccessor httpContextAccessor,
+        IAuthenticationService authenticationService,
         MaintenXDbContext dbContext,
         TimeProvider timeProvider,
         ILogger<PlatformGrantResolver> logger)
     {
+        _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
+        _authenticationService = authenticationService ?? throw new ArgumentNullException(nameof(authenticationService));
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -34,7 +45,6 @@ public sealed class PlatformGrantResolver : IPlatformGrantResolver
 
     /// <inheritdoc />
     public async Task<PlatformGrantResolutionResult> ResolveAsync(
-        ClaimsPrincipal? principal,
         PermissionKey? permission,
         CancellationToken cancellationToken = default)
     {
@@ -48,33 +58,65 @@ public sealed class PlatformGrantResolver : IPlatformGrantResolver
             return PlatformGrantResolutionResult.Deny("InvalidOrUnregisteredPlatformPermission", permission);
         }
 
-        // 2. Verify authenticated identity originates from a trusted authentication scheme
-        if (principal?.Identity is not ClaimsIdentity identity ||
-            !identity.IsAuthenticated ||
-            string.IsNullOrWhiteSpace(identity.AuthenticationType))
+        // 2. Require an active server-controlled HttpContext
+        var httpContext = _httpContextAccessor.HttpContext;
+        if (httpContext is null)
         {
-            return PlatformGrantResolutionResult.Deny("UnauthenticatedPrincipal", permission);
+            return PlatformGrantResolutionResult.Deny("MissingHttpContext", permission);
         }
 
-        // 3. Extract and validate non-ambiguous identity claims (sub, sid, sst)
-        if (!TryGetSingleGuidClaim(principal, out var userId, ClaimTypes.NameIdentifier, JwtRegisteredClaimNames.Sub, "sub"))
-        {
-            return PlatformGrantResolutionResult.Deny("InvalidOrAmbiguousUserClaim", permission);
-        }
-
-        if (!TryGetSingleGuidClaim(principal, out var sessionId, JwtRegisteredClaimNames.Sid, "sid"))
-        {
-            return PlatformGrantResolutionResult.Deny("InvalidOrAmbiguousSessionClaim", permission);
-        }
-
-        if (!TryGetSingleStringClaim(principal, "sst", out var securityStamp))
-        {
-            return PlatformGrantResolutionResult.Deny("InvalidOrAmbiguousSecurityStampClaim", permission);
-        }
+        Guid userId = Guid.Empty;
 
         try
         {
-            // 4. Verify current authoritative User eligibility and SecurityStamp (no stale cache)
+            // 3. Obtain authentication provenance exclusively from the configured Bearer scheme
+            var authResult = await _authenticationService.AuthenticateAsync(
+                httpContext,
+                JwtBearerDefaults.AuthenticationScheme);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!authResult.Succeeded ||
+                authResult.Ticket is null ||
+                !string.Equals(authResult.Ticket.AuthenticationScheme, JwtBearerDefaults.AuthenticationScheme, StringComparison.Ordinal) ||
+                authResult.Principal is null)
+            {
+                return PlatformGrantResolutionResult.Deny("UnauthenticatedBearerContext", permission);
+            }
+
+            // 4. Require exactly one authenticated ClaimsIdentity (reject ambiguous/multi-identity principals)
+            var authenticatedIdentities = authResult.Principal.Identities
+                .Where(i => i.IsAuthenticated)
+                .ToList();
+
+            if (authenticatedIdentities.Count != 1)
+            {
+                return PlatformGrantResolutionResult.Deny("AmbiguousAuthenticatedIdentities", permission);
+            }
+
+            var identity = authenticatedIdentities[0];
+            if (string.IsNullOrWhiteSpace(identity.AuthenticationType))
+            {
+                return PlatformGrantResolutionResult.Deny("UnauthenticatedBearerContext", permission);
+            }
+
+            // 5. Extract and validate non-ambiguous identity claims from that single identity only
+            if (!TryGetSingleGuidClaim(identity, out userId, ClaimTypes.NameIdentifier, JwtRegisteredClaimNames.Sub, "sub"))
+            {
+                return PlatformGrantResolutionResult.Deny("InvalidOrAmbiguousUserClaim", permission);
+            }
+
+            if (!TryGetSingleGuidClaim(identity, out var sessionId, JwtRegisteredClaimNames.Sid, "sid"))
+            {
+                return PlatformGrantResolutionResult.Deny("InvalidOrAmbiguousSessionClaim", permission);
+            }
+
+            if (!TryGetSingleStringClaim(identity, "sst", out var securityStamp))
+            {
+                return PlatformGrantResolutionResult.Deny("InvalidOrAmbiguousSecurityStampClaim", permission);
+            }
+
+            // 6. Verify current authoritative User eligibility and SecurityStamp (no stale cache)
             var user = await _dbContext.Users
                 .AsNoTracking()
                 .Where(u => u.Id == userId)
@@ -87,7 +129,7 @@ public sealed class PlatformGrantResolver : IPlatformGrantResolver
                 return PlatformGrantResolutionResult.Deny("IneligibleAccountOrSecurityStampMismatch", permission);
             }
 
-            // 5. Verify current authoritative UserSession validity (belongs to user, not revoked, not expired)
+            // 7. Verify current authoritative UserSession validity (belongs to user, not revoked, not expired)
             var utcNow = _timeProvider.GetUtcNow().UtcDateTime;
             var session = await _dbContext.UserSessions
                 .AsNoTracking()
@@ -104,7 +146,7 @@ public sealed class PlatformGrantResolver : IPlatformGrantResolver
                 return PlatformGrantResolutionResult.Deny("InvalidOrExpiredSession", permission);
             }
 
-            // 6. Query current authoritative Active PlatformRoleGrants for this User (global scope)
+            // 8. Query current authoritative Active PlatformRoleGrants for this User (global scope)
             var activeGrants = await _dbContext.PlatformRoleGrants
                 .AsNoTracking()
                 .Where(g => g.UserId == userId && g.Status == PlatformRoleGrantStatus.Active)
@@ -141,25 +183,22 @@ public sealed class PlatformGrantResolver : IPlatformGrantResolver
         }
     }
 
-    private static bool TryGetSingleGuidClaim(ClaimsPrincipal principal, out Guid value, params string[] claimTypes)
+    private static bool TryGetSingleGuidClaim(ClaimsIdentity identity, out Guid value, params string[] claimTypes)
     {
         value = Guid.Empty;
-        var matchedClaims = principal.Claims
+        var matchedClaims = identity.Claims
             .Where(c => claimTypes.Contains(c.Type, StringComparer.Ordinal))
             .Select(c => c.Value)
             .ToList();
 
-        // Reject missing claims or ambiguous duplicate claims with differing values
         if (matchedClaims.Count == 0)
         {
             return false;
         }
 
-        // If JWT handler mapped 'sub' to NameIdentifier, both may exist with identical value; distinct values > 1 is ambiguous.
-        // Multiple claims of the exact same type are also ambiguous.
         foreach (var type in claimTypes)
         {
-            if (principal.Claims.Count(c => string.Equals(c.Type, type, StringComparison.Ordinal)) > 1)
+            if (identity.Claims.Count(c => string.Equals(c.Type, type, StringComparison.Ordinal)) > 1)
             {
                 return false;
             }
@@ -174,10 +213,10 @@ public sealed class PlatformGrantResolver : IPlatformGrantResolver
         return Guid.TryParse(distinctValues[0], out value) && value != Guid.Empty;
     }
 
-    private static bool TryGetSingleStringClaim(ClaimsPrincipal principal, string claimType, out string value)
+    private static bool TryGetSingleStringClaim(ClaimsIdentity identity, string claimType, out string value)
     {
         value = string.Empty;
-        var matched = principal.Claims
+        var matched = identity.Claims
             .Where(c => string.Equals(c.Type, claimType, StringComparison.Ordinal))
             .ToList();
 

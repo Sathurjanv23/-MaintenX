@@ -9,12 +9,14 @@ using Microsoft.Extensions.DependencyInjection;
 public static class AuthorizationServiceExtensions
 {
     /// <summary>
-    /// Registers <see cref="IPlatformGrantResolver"/> as a scoped service matching <c>MaintenXDbContext</c> lifetime.
+    /// Registers <see cref="IPlatformGrantResolver"/> as a scoped service matching <c>MaintenXDbContext</c>
+    /// and <c>IAuthenticationService</c> lifetimes, along with <c>IHttpContextAccessor</c>.
     /// </summary>
     public static IServiceCollection AddMaintenXAuthorization(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        services.AddHttpContextAccessor();
         services.AddScoped<IPlatformGrantResolver, PlatformGrantResolver>();
         return services;
     }

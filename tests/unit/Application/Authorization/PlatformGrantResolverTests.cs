@@ -6,36 +6,45 @@ using MaintenX.Api.Application.Authorization;
 using MaintenX.Api.Application.Authorization.Services;
 using MaintenX.Api.Domain.Authorization;
 using MaintenX.Api.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 /// <summary>
-/// Unit tests for <see cref="PlatformGrantResolver"/> covering permission validation,
-/// trusted authentication boundary, claim ambiguity/malformed claim rejection,
-/// cancellation propagation, fail-closed DB failure handling, and DI lifetime.
+/// Unit tests for <see cref="PlatformGrantResolver"/> covering server-controlled Bearer
+/// authentication provenance, untrusted scheme/manual HttpContext.User rejection,
+/// multi-identity ambiguity, claim validation, cancellation, DB failure handling, and DI lifetime.
 /// </summary>
 public class PlatformGrantResolverTests
 {
-    private static PlatformGrantResolver CreateResolver(MaintenXDbContext? dbContext = null)
+    private static PlatformGrantResolver CreateResolver(
+        HttpContext? httpContext,
+        IAuthenticationService? authService = null,
+        MaintenXDbContext? dbContext = null)
     {
+        var accessor = new HttpContextAccessor { HttpContext = httpContext };
         var context = dbContext ?? new MaintenXDbContext(
             new DbContextOptionsBuilder<MaintenXDbContext>()
                 .UseNpgsql("Host=localhost;Database=unused;Username=unused;Password=unused")
                 .Options);
 
         return new PlatformGrantResolver(
+            accessor,
+            authService ?? new StubAuthenticationService(AuthenticateResult.NoResult()),
             context,
             TimeProvider.System,
             NullLogger<PlatformGrantResolver>.Instance);
     }
 
-    private static ClaimsPrincipal CreateAuthenticatedPrincipal(
+    private static ClaimsPrincipal CreatePrincipal(
         Guid? userId = null,
         Guid? sessionId = null,
         string? securityStamp = "valid-stamp-123",
-        string? authType = "Bearer")
+        string? authType = JwtBearerDefaults.AuthenticationScheme)
     {
         var claims = new List<Claim>();
         if (userId.HasValue)
@@ -61,143 +70,161 @@ public class PlatformGrantResolverTests
     }
 
     [Fact]
+    public void Interface_DoesNotExposeCallerSuppliedPrincipalOverload()
+    {
+        var methods = typeof(IPlatformGrantResolver).GetMethods();
+        var singleMethod = Assert.Single(methods);
+        Assert.Equal("ResolveAsync", singleMethod.Name);
+        Assert.DoesNotContain(singleMethod.GetParameters(), p => p.ParameterType == typeof(ClaimsPrincipal));
+    }
+
+    [Fact]
     public async Task ResolveAsync_NullOrUnregisteredOrTenantPermission_IsDenied()
     {
-        var resolver = CreateResolver();
-        var principal = CreateAuthenticatedPrincipal(Guid.NewGuid(), Guid.NewGuid());
+        var httpContext = new DefaultHttpContext();
+        var principal = CreatePrincipal(Guid.NewGuid(), Guid.NewGuid());
+        var auth = new StubAuthenticationService(
+            AuthenticateResult.Success(new AuthenticationTicket(principal, JwtBearerDefaults.AuthenticationScheme)));
+        var resolver = CreateResolver(httpContext, auth);
 
-        var nullResult = await resolver.ResolveAsync(principal, null);
+        var nullResult = await resolver.ResolveAsync(null);
         Assert.False(nullResult.IsAllowed);
         Assert.Equal("InvalidOrUnregisteredPlatformPermission", nullResult.DenialReason);
 
-        var unknownResult = await resolver.ResolveAsync(principal, PermissionKey.Parse("platform.tenants.unknown"));
+        var unknownResult = await resolver.ResolveAsync(PermissionKey.Parse("platform.tenants.unknown"));
         Assert.False(unknownResult.IsAllowed);
         Assert.Equal("InvalidOrUnregisteredPlatformPermission", unknownResult.DenialReason);
 
         foreach (var tenantPerm in PermissionCatalog.TenantPermissions)
         {
-            var tenantResult = await resolver.ResolveAsync(principal, tenantPerm.Key);
+            var tenantResult = await resolver.ResolveAsync(tenantPerm.Key);
             Assert.False(tenantResult.IsAllowed);
             Assert.Equal("InvalidOrUnregisteredPlatformPermission", tenantResult.DenialReason);
         }
     }
 
     [Fact]
-    public async Task ResolveAsync_UnauthenticatedOrMissingSchemePrincipal_IsDenied()
+    public async Task ResolveAsync_MissingHttpContext_OrNoResult_OrFailure_IsDenied()
     {
-        var resolver = CreateResolver();
         var perm = PermissionCatalog.Platform.TenantsRead;
 
-        var nullPrincipal = await resolver.ResolveAsync(null, perm);
-        Assert.False(nullPrincipal.IsAllowed);
-        Assert.Equal("UnauthenticatedPrincipal", nullPrincipal.DenialReason);
+        // A. No current HTTP context
+        var noContextResult = await CreateResolver(null).ResolveAsync(perm);
+        Assert.False(noContextResult.IsAllowed);
+        Assert.Equal("MissingHttpContext", noContextResult.DenialReason);
 
-        var unauthPrincipal = CreateAuthenticatedPrincipal(Guid.NewGuid(), Guid.NewGuid(), authType: null);
-        var unauthResult = await resolver.ResolveAsync(unauthPrincipal, perm);
-        Assert.False(unauthResult.IsAllowed);
-        Assert.Equal("UnauthenticatedPrincipal", unauthResult.DenialReason);
+        // B. AuthenticateAsync returns NoResult
+        var noResult = await CreateResolver(
+            new DefaultHttpContext(),
+            new StubAuthenticationService(AuthenticateResult.NoResult())).ResolveAsync(perm);
+        Assert.False(noResult.IsAllowed);
+        Assert.Equal("UnauthenticatedBearerContext", noResult.DenialReason);
 
-        var emptyAuthTypeIdentity = new ClaimsIdentity(
-            new[]
-            {
-                new Claim(JwtRegisteredClaimNames.Sub, Guid.NewGuid().ToString()),
-                new Claim(JwtRegisteredClaimNames.Sid, Guid.NewGuid().ToString()),
-                new Claim("sst", "stamp")
-            },
-            authenticationType: "");
-        var emptyAuthTypeResult = await resolver.ResolveAsync(new ClaimsPrincipal(emptyAuthTypeIdentity), perm);
-        Assert.False(emptyAuthTypeResult.IsAllowed);
-        Assert.Equal("UnauthenticatedPrincipal", emptyAuthTypeResult.DenialReason);
+        // C. AuthenticateAsync returns Fail
+        var failResult = await CreateResolver(
+            new DefaultHttpContext(),
+            new StubAuthenticationService(AuthenticateResult.Fail("Invalid signature"))).ResolveAsync(perm);
+        Assert.False(failResult.IsAllowed);
+        Assert.Equal("UnauthenticatedBearerContext", failResult.DenialReason);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ManuallyAssignedHttpContextUser_WithoutBearerSuccess_IsDenied()
+    {
+        var httpContext = new DefaultHttpContext
+        {
+            User = CreatePrincipal(Guid.NewGuid(), Guid.NewGuid())
+        };
+
+        var resolver = CreateResolver(httpContext, new StubAuthenticationService(AuthenticateResult.NoResult()));
+        var result = await resolver.ResolveAsync(PermissionCatalog.Platform.TenantsRead);
+
+        Assert.False(result.IsAllowed);
+        Assert.Equal("UnauthenticatedBearerContext", result.DenialReason);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_UntrustedAuthenticationScheme_IsDenied()
+    {
+        var principal = CreatePrincipal(Guid.NewGuid(), Guid.NewGuid(), authType: "CustomScheme");
+        var auth = new StubAuthenticationService(
+            AuthenticateResult.Success(new AuthenticationTicket(principal, "CustomScheme")));
+
+        var resolver = CreateResolver(new DefaultHttpContext(), auth);
+        var result = await resolver.ResolveAsync(PermissionCatalog.Platform.TenantsRead);
+
+        Assert.False(result.IsAllowed);
+        Assert.Equal("UnauthenticatedBearerContext", result.DenialReason);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MultipleAuthenticatedIdentities_IsDenied()
+    {
+        var id1 = new ClaimsIdentity(new[]
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, Guid.NewGuid().ToString()),
+            new Claim(JwtRegisteredClaimNames.Sid, Guid.NewGuid().ToString()),
+            new Claim("sst", "stamp-1")
+        }, JwtBearerDefaults.AuthenticationScheme);
+
+        var id2 = new ClaimsIdentity(new[]
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, Guid.NewGuid().ToString()),
+            new Claim(JwtRegisteredClaimNames.Sid, Guid.NewGuid().ToString()),
+            new Claim("sst", "stamp-2")
+        }, JwtBearerDefaults.AuthenticationScheme);
+
+        var principal = new ClaimsPrincipal(new[] { id1, id2 });
+        var auth = new StubAuthenticationService(
+            AuthenticateResult.Success(new AuthenticationTicket(principal, JwtBearerDefaults.AuthenticationScheme)));
+
+        var resolver = CreateResolver(new DefaultHttpContext(), auth);
+        var result = await resolver.ResolveAsync(PermissionCatalog.Platform.TenantsRead);
+
+        Assert.False(result.IsAllowed);
+        Assert.Equal("AmbiguousAuthenticatedIdentities", result.DenialReason);
     }
 
     [Fact]
     public async Task ResolveAsync_MissingEmptyMalformedOrAmbiguousClaims_IsDenied()
     {
-        var resolver = CreateResolver();
         var perm = PermissionCatalog.Platform.TenantsRead;
 
-        // Missing / empty / malformed sub
-        Assert.Equal("InvalidOrAmbiguousUserClaim",
-            (await resolver.ResolveAsync(CreateAuthenticatedPrincipal(null, Guid.NewGuid()), perm)).DenialReason);
-        Assert.Equal("InvalidOrAmbiguousUserClaim",
-            (await resolver.ResolveAsync(CreateAuthenticatedPrincipal(Guid.Empty, Guid.NewGuid()), perm)).DenialReason);
-
-        var malformedSub = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        async Task<string?> Eval(ClaimsPrincipal p)
         {
-            new Claim("sub", "not-a-guid"),
-            new Claim("sid", Guid.NewGuid().ToString()),
-            new Claim("sst", "stamp")
-        }, "Bearer"));
-        Assert.Equal("InvalidOrAmbiguousUserClaim", (await resolver.ResolveAsync(malformedSub, perm)).DenialReason);
+            var auth = new StubAuthenticationService(
+                AuthenticateResult.Success(new AuthenticationTicket(p, JwtBearerDefaults.AuthenticationScheme)));
+            return (await CreateResolver(new DefaultHttpContext(), auth).ResolveAsync(perm)).DenialReason;
+        }
 
-        // Ambiguous duplicate sub
+        Assert.Equal("InvalidOrAmbiguousUserClaim", await Eval(CreatePrincipal(null, Guid.NewGuid())));
+        Assert.Equal("InvalidOrAmbiguousUserClaim", await Eval(CreatePrincipal(Guid.Empty, Guid.NewGuid())));
+
         var dupSub = new ClaimsPrincipal(new ClaimsIdentity(new[]
         {
             new Claim("sub", Guid.NewGuid().ToString()),
             new Claim("sub", Guid.NewGuid().ToString()),
             new Claim("sid", Guid.NewGuid().ToString()),
             new Claim("sst", "stamp")
-        }, "Bearer"));
-        Assert.Equal("InvalidOrAmbiguousUserClaim", (await resolver.ResolveAsync(dupSub, perm)).DenialReason);
+        }, JwtBearerDefaults.AuthenticationScheme));
+        Assert.Equal("InvalidOrAmbiguousUserClaim", await Eval(dupSub));
 
-        // Missing / empty / ambiguous sid
-        Assert.Equal("InvalidOrAmbiguousSessionClaim",
-            (await resolver.ResolveAsync(CreateAuthenticatedPrincipal(Guid.NewGuid(), null), perm)).DenialReason);
-        Assert.Equal("InvalidOrAmbiguousSessionClaim",
-            (await resolver.ResolveAsync(CreateAuthenticatedPrincipal(Guid.NewGuid(), Guid.Empty), perm)).DenialReason);
+        Assert.Equal("InvalidOrAmbiguousSessionClaim", await Eval(CreatePrincipal(Guid.NewGuid(), null)));
+        Assert.Equal("InvalidOrAmbiguousSessionClaim", await Eval(CreatePrincipal(Guid.NewGuid(), Guid.Empty)));
 
-        var dupSid = new ClaimsPrincipal(new ClaimsIdentity(new[]
-        {
-            new Claim("sub", Guid.NewGuid().ToString()),
-            new Claim("sid", Guid.NewGuid().ToString()),
-            new Claim("sid", Guid.NewGuid().ToString()),
-            new Claim("sst", "stamp")
-        }, "Bearer"));
-        Assert.Equal("InvalidOrAmbiguousSessionClaim", (await resolver.ResolveAsync(dupSid, perm)).DenialReason);
-
-        // Missing / whitespace / ambiguous sst
-        Assert.Equal("InvalidOrAmbiguousSecurityStampClaim",
-            (await resolver.ResolveAsync(CreateAuthenticatedPrincipal(Guid.NewGuid(), Guid.NewGuid(), null), perm)).DenialReason);
-        Assert.Equal("InvalidOrAmbiguousSecurityStampClaim",
-            (await resolver.ResolveAsync(CreateAuthenticatedPrincipal(Guid.NewGuid(), Guid.NewGuid(), "   "), perm)).DenialReason);
-
-        var dupSst = new ClaimsPrincipal(new ClaimsIdentity(new[]
-        {
-            new Claim("sub", Guid.NewGuid().ToString()),
-            new Claim("sid", Guid.NewGuid().ToString()),
-            new Claim("sst", "stamp-1"),
-            new Claim("sst", "stamp-2")
-        }, "Bearer"));
-        Assert.Equal("InvalidOrAmbiguousSecurityStampClaim", (await resolver.ResolveAsync(dupSst, perm)).DenialReason);
-    }
-
-    [Fact]
-    public async Task ResolveAsync_ClientSuppliedRoleOrAdminClaimWithoutTrustedIdentity_CannotElevate()
-    {
-        var resolver = CreateResolver();
-        var unauthWithRoleClaims = new ClaimsPrincipal(new ClaimsIdentity(new[]
-        {
-            new Claim(ClaimTypes.Role, "PlatformAdministrator"),
-            new Claim("IsPlatformAdmin", "true")
-        }));
-
-        var result = await resolver.ResolveAsync(unauthWithRoleClaims, PermissionCatalog.Platform.TenantsActivate);
-        Assert.False(result.IsAllowed);
-        Assert.Null(result.UserId);
-        Assert.Null(result.GrantId);
-        Assert.Null(result.Role);
+        Assert.Equal("InvalidOrAmbiguousSecurityStampClaim", await Eval(CreatePrincipal(Guid.NewGuid(), Guid.NewGuid(), null)));
+        Assert.Equal("InvalidOrAmbiguousSecurityStampClaim", await Eval(CreatePrincipal(Guid.NewGuid(), Guid.NewGuid(), "   ")));
     }
 
     [Fact]
     public async Task ResolveAsync_PreCancelledToken_ThrowsOperationCanceledException()
     {
-        var resolver = CreateResolver();
-        var principal = CreateAuthenticatedPrincipal(Guid.NewGuid(), Guid.NewGuid());
+        var resolver = CreateResolver(new DefaultHttpContext());
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            resolver.ResolveAsync(principal, PermissionCatalog.Platform.TenantsRead, cts.Token));
+            resolver.ResolveAsync(PermissionCatalog.Platform.TenantsRead, cts.Token));
     }
 
     [Fact]
@@ -209,22 +236,46 @@ public class PlatformGrantResolverTests
                 .Options);
         await disposedContext.DisposeAsync();
 
-        var resolver = CreateResolver(disposedContext);
-        var principal = CreateAuthenticatedPrincipal(Guid.NewGuid(), Guid.NewGuid());
+        var principal = CreatePrincipal(Guid.NewGuid(), Guid.NewGuid());
+        var auth = new StubAuthenticationService(
+            AuthenticateResult.Success(new AuthenticationTicket(principal, JwtBearerDefaults.AuthenticationScheme)));
 
-        var result = await resolver.ResolveAsync(principal, PermissionCatalog.Platform.TenantsRead);
+        var resolver = CreateResolver(new DefaultHttpContext(), auth, disposedContext);
+        var result = await resolver.ResolveAsync(PermissionCatalog.Platform.TenantsRead);
+
         Assert.False(result.IsAllowed);
         Assert.Equal("InfrastructureFailure", result.DenialReason);
     }
 
     [Fact]
-    public void AddMaintenXAuthorization_RegistersScopedResolver()
+    public void AddMaintenXAuthorization_RegistersHttpContextAccessorAndScopedResolver()
     {
         var services = new ServiceCollection();
         services.AddMaintenXAuthorization();
 
+        Assert.Contains(services, d => d.ServiceType == typeof(IHttpContextAccessor));
         var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IPlatformGrantResolver));
         Assert.Equal(typeof(PlatformGrantResolver), descriptor.ImplementationType);
         Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+    }
+
+    private sealed class StubAuthenticationService(AuthenticateResult result) : IAuthenticationService
+    {
+        public Task<AuthenticateResult> AuthenticateAsync(HttpContext context, string? scheme) =>
+            Task.FromResult(string.Equals(scheme, JwtBearerDefaults.AuthenticationScheme, StringComparison.Ordinal)
+                ? result
+                : AuthenticateResult.NoResult());
+
+        public Task ChallengeAsync(HttpContext context, string? scheme, AuthenticationProperties? properties) =>
+            Task.CompletedTask;
+
+        public Task ForbidAsync(HttpContext context, string? scheme, AuthenticationProperties? properties) =>
+            Task.CompletedTask;
+
+        public Task SignInAsync(HttpContext context, string? scheme, ClaimsPrincipal principal, AuthenticationProperties? properties) =>
+            Task.CompletedTask;
+
+        public Task SignOutAsync(HttpContext context, string? scheme, AuthenticationProperties? properties) =>
+            Task.CompletedTask;
     }
 }
