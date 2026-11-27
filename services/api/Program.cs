@@ -1,3 +1,4 @@
+using MaintenX.Api.Application.Authorization;
 using MaintenX.Api.Application.Tenancy;
 using MaintenX.Api.Common.Errors;
 using MaintenX.Api.Common.Health;
@@ -26,6 +27,9 @@ builder.Services.AddMaintenXPersistence(builder.Configuration);
 
 // 5. Multi-Tenancy Infrastructure (Verified Context Resolution)
 builder.Services.AddMaintenXTenancy();
+
+// 6. Platform Authorization Infrastructure (Authoritative Grant Resolution)
+builder.Services.AddMaintenXAuthorization();
 
 // 6. Health Checks
 builder.Services.AddHealthChecks()
