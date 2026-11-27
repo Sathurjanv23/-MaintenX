@@ -118,6 +118,7 @@ public class PlatformRoleGrantPersistenceModelTests
             activeUniqueIndex.Properties.Select(p => p.Name).ToArray());
 
         var checkNames = entityType.GetCheckConstraints().Select(c => c.Name).ToHashSet();
+        Assert.Contains("ck_platform_role_grants_id_non_empty", checkNames);
         Assert.Contains("ck_platform_role_grants_user_id_non_empty", checkNames);
         Assert.Contains("ck_platform_role_grants_granted_by_non_empty", checkNames);
         Assert.Contains("ck_platform_role_grants_role", checkNames);

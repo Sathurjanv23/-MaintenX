@@ -49,3 +49,31 @@ In EF Core 10, `Database.MigrateAsync()` validates the runtime `DbContext` model
 ### Rollback Behavior & Data-Loss Warning
 - `Up()` is strictly additive (`CreateTable` + 3 `CreateIndex` calls on `platform.platform_role_grants`); no existing tables, columns, or tenant isolation rules are modified.
 - `Down()` executes `DropTable("platform_role_grants", schema: "platform")`. **Rolling back this migration permanently removes all `platform.platform_role_grants` data** and must only be executed against disposable test databases or with an approved backup/restore plan.
+
+---
+
+## 3. Task 4.2.2 Physical PostgreSQL Verification & Corrective Migration
+
+**Verification Branch:** `feat/004-02-02-permission-persistence` (base `295e668a8b80838374363629898dacb326545bb4`)  
+**Corrective Migration:** `20261127110410_HardenPlatformRoleGrantConstraints`
+
+### Confirmed Database Integrity Defects & Corrections
+1. **Empty Primary Key UUID (`id = Guid.Empty`)**: PostgreSQL accepted `00000000-0000-0000-0000-000000000000` for `id` because `PRIMARY KEY` alone does not prohibit the all-zero UUID. Added `ck_platform_role_grants_id_non_empty` (`id <> '00000000-0000-0000-0000-000000000000'`).
+2. **Revocation Reason Whitespace Mismatch**: PostgreSQL `btrim(revocation_reason)` without a second argument trims only ASCII space (`U+0020`), so `"\t\t\t"`, `"\n\n\n"`, `"\r\n\t "`, `"\u00A0\u00A0\u00A0"`, and `"  ab\t"` previously passed the `>= 3` length check. Updated `ck_platform_role_grants_revocation_consistency` to trim ASCII whitespace (`chr(32), chr(9), chr(10), chr(13), chr(11), chr(12)`) and Unicode `Char.IsWhiteSpace` separators (`chr(160), chr(5760), chr(8192)–chr(8202), chr(8232), chr(8233), chr(8239), chr(8287), chr(12288)`).
+
+### Verification Matrix
+| Area | Status | Evidence |
+|---|---|---|
+| Physical schema (`information_schema.columns`, `pg_constraint`, `pg_indexes`) | **PASS** | `PhysicalSchema_*` (`10` columns, no `tenant_id` / `is_active`, 7 check constraints, 1 restrictive FK, 3 indexes) |
+| Check constraints (`23514`) & NOT NULL (`23502`) | **PASS** | `CheckConstraints_*`, `NotNullConstraints_*` |
+| Revocation consistency, NULL semantics & whitespace boundaries (`23514`, `22001`) | **PASS** | `RevocationConsistency_*`, `RevocationReason_*` |
+| Partial unique index (`23505`) & concurrent duplicate inserts | **PASS** | `PartialUniqueIndex_*` (single active grant, multiple revoked history, re-granting, concurrent race) |
+| Target user FK & restrictive deletion (`23503`) | **PASS** | `ForeignKey_NonexistentUserRejected_AndHardDeletingUserWithActiveOrRevokedGrantBlockedWith23503` |
+| EF Core lifecycle round-trip & optimistic concurrency | **PASS** | `EfCoreRoundTrip_CreateRevokeIdempotentAndOptimisticConcurrency` (`Version` 1 -> 2, idempotency, `DbUpdateConcurrencyException`) |
+| Migration upgrade safety with existing records | **PASS** | `MigrationUpgrade_FromPreviousMigrationWithExistingRecords_PreservesDataAndAddsTable` |
+| Runtime platform authorization & lifecycle endpoints | **DEFERRED** | Steps `4.3`–`4.8` |
+
+### Actor Attribution & Lifecycle Boundary
+- **Actor Attribution (`granted_by_user_id`, `revoked_by_user_id`):** Intentionally have **no foreign key** to `platform.users(id)` so historical audit attribution outlives user accounts and bootstrap attribution in Step 4.3.2 does not require fabricating a synthetic user. A non-empty UUID is not proof of a verified administrator identity; authoritative actor verification belongs to application services in Steps `4.3`+.
+- **Row-Level CHECK Boundary:** PostgreSQL `CHECK` constraints validate current row state only; they do not prevent a raw SQL `UPDATE` from mutating a `Revoked` row back to `Active` if all columns are made consistent. Terminal transition immutability is enforced in domain/application services (`PlatformRoleGrant.Revoke()`).
+
