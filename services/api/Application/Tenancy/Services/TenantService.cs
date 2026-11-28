@@ -217,6 +217,25 @@ public sealed class TenantService : ITenantService
                 return TenantResult.NotFound(); // Anti-enumeration: Non-members receive NotFound
             }
         }
+        else
+        {
+            // Explicit administrative inspection bypass tracking (Task 4.4.2)
+            var isMember = await IsActiveTenantMemberAsync(effectiveActor, tenant.Id, cancellationToken);
+            if (!isMember)
+            {
+                var auditEvent = TenantAuditEvent.Create(
+                    tenant.Id,
+                    effectiveActor.UserId,
+                    "PlatformAdminTenantInspectionBypass",
+                    tenant.Status.ToString(),
+                    tenant.Status.ToString(),
+                    $"Administrative inspection bypass for tenant '{tenant.Slug}' ({tenant.Id})",
+                    _timeProvider.GetUtcNow().UtcDateTime);
+
+                _dbContext.TenantAuditEvents.Add(auditEvent);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
+        }
 
         return TenantResult.Success(MapToResponse(tenant));
     }
@@ -266,6 +285,25 @@ public sealed class TenantService : ITenantService
                     "Tenant lookup by slug denied: User {UserId} is not an active member of Tenant {TenantId}.",
                     effectiveActor.UserId, tenant.Id);
                 return TenantResult.NotFound(); // Anti-enumeration
+            }
+        }
+        else
+        {
+            // Explicit administrative inspection bypass tracking (Task 4.4.2)
+            var isMember = await IsActiveTenantMemberAsync(effectiveActor, tenant.Id, cancellationToken);
+            if (!isMember)
+            {
+                var auditEvent = TenantAuditEvent.Create(
+                    tenant.Id,
+                    effectiveActor.UserId,
+                    "PlatformAdminTenantInspectionBypass",
+                    tenant.Status.ToString(),
+                    tenant.Status.ToString(),
+                    $"Administrative inspection bypass for tenant '{tenant.Slug}' ({tenant.Id})",
+                    _timeProvider.GetUtcNow().UtcDateTime);
+
+                _dbContext.TenantAuditEvents.Add(auditEvent);
+                await _dbContext.SaveChangesAsync(cancellationToken);
             }
         }
 
@@ -407,13 +445,18 @@ public sealed class TenantService : ITenantService
                     var now = _timeProvider.GetUtcNow().UtcDateTime;
                     tenant.UpdateDisplayName(trimmedDisplayName, now);
 
+                    var isBypass = effectiveActor.IsPlatformAdmin && !await IsActiveTenantMemberAsync(effectiveActor, tenant.Id, cancellationToken);
+                    var auditReason = isBypass
+                        ? $"PlatformAdminBypass: DisplayName updated (version {previousVersion} -> {tenant.Version})"
+                        : $"Changed fields: DisplayName (version {previousVersion} -> {tenant.Version})";
+
                     var auditEvent = TenantAuditEvent.Create(
                         tenant.Id,
                         effectiveActor.UserId,
                         "TenantSettingsUpdated",
                         tenant.Status.ToString(),
                         tenant.Status.ToString(),
-                        $"Changed fields: DisplayName (version {previousVersion} -> {tenant.Version})",
+                        auditReason,
                         now);
 
                     _dbContext.TenantAuditEvents.Add(auditEvent);
@@ -822,7 +865,7 @@ public sealed class TenantService : ITenantService
         Guid tenantId,
         CancellationToken cancellationToken)
     {
-        if (actor.TenantId.HasValue && actor.TenantId.Value == tenantId && actor.Role.HasValue)
+        if (!actor.IsPlatformAdmin && actor.TenantId.HasValue && actor.TenantId.Value == tenantId && actor.Role.HasValue)
         {
             return true;
         }

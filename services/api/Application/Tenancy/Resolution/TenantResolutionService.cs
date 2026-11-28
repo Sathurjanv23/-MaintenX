@@ -2,8 +2,10 @@ namespace MaintenX.Api.Application.Tenancy.Resolution;
 
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using MaintenX.Api.Application.Authorization.Services;
 using MaintenX.Api.Application.Tenancy.Context;
 using MaintenX.Api.Common.Security;
+using MaintenX.Api.Domain.Authorization;
 using MaintenX.Api.Domain.Tenants;
 using MaintenX.Api.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Http;
@@ -19,11 +21,13 @@ using Microsoft.Extensions.Logging;
 /// 4. Explicit tenant selection (no implicit first-tenant defaulting)
 /// 5. Tenant existence and Active operational status (rejecting suspended/deactivated/pending onboarding)
 /// 6. Active membership for that exact user and tenant (rejecting pending/suspended/revoked memberships)
+/// 7. Explicit, auditable administrative bypass for verified platform administrators without personal memberships
 /// </summary>
 public sealed class TenantResolutionService : ITenantResolutionService
 {
     private readonly MaintenXDbContext _dbContext;
     private readonly ISecurityStampValidator _securityStampValidator;
+    private readonly IPlatformGrantResolver? _platformGrantResolver;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<TenantResolutionService> _logger;
 
@@ -32,9 +36,20 @@ public sealed class TenantResolutionService : ITenantResolutionService
         ISecurityStampValidator securityStampValidator,
         TimeProvider timeProvider,
         ILogger<TenantResolutionService> logger)
+        : this(dbContext, securityStampValidator, platformGrantResolver: null, timeProvider, logger)
+    {
+    }
+
+    public TenantResolutionService(
+        MaintenXDbContext dbContext,
+        ISecurityStampValidator securityStampValidator,
+        IPlatformGrantResolver? platformGrantResolver,
+        TimeProvider timeProvider,
+        ILogger<TenantResolutionService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _securityStampValidator = securityStampValidator ?? throw new ArgumentNullException(nameof(securityStampValidator));
+        _platformGrantResolver = platformGrantResolver;
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -157,6 +172,42 @@ public sealed class TenantResolutionService : ITenantResolutionService
 
         if (currentMembership is null)
         {
+            // Check if caller possesses verified platform administrator authority (Task 4.4.2 explicit auditable bypass)
+            if (_platformGrantResolver is not null)
+            {
+                var platformGrant = await _platformGrantResolver.ResolveAsync(
+                    PermissionCatalog.Platform.TenantsRead,
+                    cancellationToken);
+
+                if (platformGrant.IsAllowed)
+                {
+                    _logger.LogInformation(
+                        "Security Audit: Platform Administrator {UserId} established administrative bypass context for Tenant '{TenantSlug}' ({TenantId}).",
+                        userId, tenant.Slug, tenant.Id);
+
+                    var auditEvent = TenantAuditEvent.Create(
+                        tenant.Id,
+                        userId,
+                        "PlatformAdminTenantBypassEstablished",
+                        tenant.Status.ToString(),
+                        tenant.Status.ToString(),
+                        $"Administrative bypass established for tenant '{tenant.Slug}' ({tenant.Id})",
+                        utcNow);
+
+                    _dbContext.TenantAuditEvents.Add(auditEvent);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+
+                    var bypassContext = TenantContext.CreateAdministrativeBypass(
+                        tenant.Id,
+                        tenant.Slug,
+                        tenant.DisplayName,
+                        userId,
+                        utcNow);
+
+                    return TenantResolutionResult.Success(bypassContext);
+                }
+            }
+
             // Non-members and historically revoked members have no visibility into tenant existence or status.
             // Return the exact same generic 404 response as a nonexistent tenant.
             _logger.LogWarning(
