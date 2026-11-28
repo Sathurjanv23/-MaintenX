@@ -16,6 +16,31 @@ public sealed class TenantContext : ITenantContext
     public TenantMembershipStatus Status { get; }
     public DateTime ResolvedAtUtc { get; }
 
+    /// <summary>
+    /// Well-known synthetic membership identifier assigned to administrative bypass contexts.
+    /// Distinguishes platform administrator bypass access from genuine organizational memberships.
+    /// </summary>
+    public static readonly Guid AdministrativeBypassMembershipId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+
+    /// <summary>
+    /// Creates a verified administrative bypass tenant context for an authorized platform administrator.
+    /// </summary>
+    public static TenantContext CreateAdministrativeBypass(
+        Guid tenantId,
+        string tenantSlug,
+        string tenantDisplayName,
+        Guid userId,
+        DateTime resolvedAtUtc) =>
+        new(
+            tenantId,
+            tenantSlug,
+            tenantDisplayName,
+            userId,
+            membershipId: AdministrativeBypassMembershipId,
+            role: TenantMembershipRole.Owner,
+            status: TenantMembershipStatus.Active,
+            resolvedAtUtc);
+
     public TenantContext(
         Guid tenantId,
         string tenantSlug,
