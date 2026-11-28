@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Threading.RateLimiting;
 using MaintenX.Api.Application.Auth;
 using MaintenX.Api.Application.Auth.Services;
+using MaintenX.Api.Application.Tenancy;
 using MaintenX.Api.Common.Modules;
 using MaintenX.Api.Configuration;
 using MaintenX.Api.Domain.Auth;
@@ -316,6 +317,7 @@ public static class SecurityServiceExtensions
 
         app.UseAuthentication();
         app.UseRateLimiter();
+        app.UseTenantResolution();
         app.UseAuthorization();
 
         return app;

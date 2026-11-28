@@ -111,11 +111,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors("AllowLocalClients");
 
-// 2. Authoritative MaintenX Security Pipeline (Rate Limiting -> Authentication -> Authorization)
+// 2. Authoritative MaintenX Security Pipeline (Authentication -> Rate Limiting -> Tenant Resolution -> Authorization)
 app.UseMaintenXSecurity();
-
-// 3. Multi-Tenancy Resolution (Resolves verified request-scoped ITenantContext after authentication)
-app.UseTenantResolution();
 
 // -----------------------------------------------------------------------------
 // Health Check Endpoints (Anonymous & Excluded from Rate Limiting)
