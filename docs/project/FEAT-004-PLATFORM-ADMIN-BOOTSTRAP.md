@@ -55,8 +55,8 @@
 ## 4. Global Concurrency, Atomic Persistence & Durable Audit
 
 - **Global Coordination:** Inside `CreateExecutionStrategy().ExecuteAsync(...)`, `PlatformAdminBootstrapService` begins a database transaction and acquires PostgreSQL transaction-scoped advisory lock `pg_advisory_xact_lock(748291034)` before revalidating target eligibility and grant history. This serializes concurrent same-target and different-target bootstrap attempts.
-- **Atomic Grant + Audit:** `PlatformRoleGrant.CreateForBootstrap(...)` and `SecurityAuditEvent.Create(SecurityAuditEventType.PlatformAdministratorBootstrapped, ...)` are saved in the same `SaveChangesAsync()` and committed atomically. If audit persistence fails, the entire transaction rolls back and `ChangeTracker.Clear()` prevents stale tracked state.
-- **Migration:** `AddPlatformAdminBootstrapAttribution` (updates `platform.platform_role_grants` actor attribution columns/constraints and `ck_security_audit_events_event_type` to allow `'PlatformAdministratorBootstrapped'`).
+- **Atomic Grant + Audit:** `PlatformRoleGrant.CreateForBootstrap(...)` and `SecurityAuditEvent.Create(SecurityAuditEventType.PlatformAdministratorBootstrapped, ...)` are saved in the same `SaveChangesAsync()` and committed atomically. The audit event correlates directly to the grant ID via `SecurityAuditMetadata.ForBootstrap(grant.Id)` (`Metadata.DetectedLineage = "grant_<grant.Id:N>"`). If audit persistence fails, the entire transaction rolls back and `ChangeTracker.Clear()` prevents stale tracked state.
+- **Migration & Downgrade Safety:** `AddPlatformAdminBootstrapAttribution` (updates `platform.platform_role_grants` actor attribution columns/constraints and `ck_security_audit_events_event_type` to allow `'PlatformAdministratorBootstrapped'`). Downgrading (`Down()`) fails closed if deployment operator grants exist without null-attribution backfill. See `docs/project/FEAT-004-SEC-002-BOOTSTRAP-HARDENING.md` for full security hardening details.
 
 ---
 

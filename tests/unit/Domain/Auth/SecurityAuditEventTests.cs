@@ -139,6 +139,7 @@ public class SecurityAuditEventTests
     [InlineData("ancestor_v1")]
     [InlineData("generation_2")]
     [InlineData("depth_3")]
+    [InlineData("grant_0123456789abcdef0123456789abcdef")]
     public void Metadata_WithApprovedOrConstrainedLineages_Succeeds(string validLineage)
     {
         var meta = SecurityAuditMetadata.Create(detectedLineage: validLineage);

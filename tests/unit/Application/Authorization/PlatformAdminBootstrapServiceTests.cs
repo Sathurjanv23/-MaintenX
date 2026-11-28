@@ -3,6 +3,7 @@ namespace MaintenX.UnitTests.Application.Authorization;
 using MaintenX.Api.Application.Authorization;
 using MaintenX.Api.Application.Authorization.Contracts;
 using MaintenX.Api.Application.Authorization.Services;
+using MaintenX.Api.Domain.Auth;
 using MaintenX.Api.Domain.Authorization;
 using MaintenX.Api.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -153,5 +154,18 @@ public class PlatformAdminBootstrapServiceTests
             Assert.Single(services, d => d.ServiceType == typeof(IBootstrapOperatorAuthorizationProvider)).Lifetime);
         Assert.Equal(ServiceLifetime.Scoped,
             Assert.Single(services, d => d.ServiceType == typeof(IPlatformAdminBootstrapService)).Lifetime);
+    }
+
+    [Fact]
+    public void SecurityAuditMetadata_ForBootstrap_ProducesCorrelatedImmutableMetadata()
+    {
+        var grantId = Guid.NewGuid();
+        var meta = SecurityAuditMetadata.ForBootstrap(grantId);
+
+        Assert.Equal(SecurityAuditMetadata.Reasons.PlatformAdministratorBootstrap, meta.Reason);
+        Assert.Equal($"grant_{grantId:N}", meta.DetectedLineage);
+        Assert.Equal(SecurityAuditMetadata.Actions.PlatformAdministratorGranted, meta.ActionTaken);
+
+        Assert.Throws<ArgumentException>(() => SecurityAuditMetadata.ForBootstrap(Guid.Empty));
     }
 }

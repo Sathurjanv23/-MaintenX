@@ -18,6 +18,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -150,6 +152,10 @@ public class PlatformAdminBootstrapIntegrationTests : IAsyncLifetime
             var audit = await verifyDb.SecurityAuditEvents.AsNoTracking().SingleAsync(a => a.Id == r1.AuditEventId);
             Assert.Equal(SecurityAuditEventType.PlatformAdministratorBootstrapped, audit.EventType);
             Assert.Equal(userA.Id, audit.UserId);
+            Assert.NotNull(audit.Metadata);
+            Assert.Equal(SecurityAuditMetadata.Reasons.PlatformAdministratorBootstrap, audit.Reason);
+            Assert.Equal($"grant_{grant.Id:N}", audit.DetectedLineage);
+            Assert.Equal(SecurityAuditMetadata.Actions.PlatformAdministratorGranted, audit.ActionTaken);
         }
 
         // B. Repeated same-target bootstrap -> idempotent, no duplicate grant or audit, Version stays 1
@@ -269,8 +275,75 @@ public class PlatformAdminBootstrapIntegrationTests : IAsyncLifetime
             Assert.Equal(PlatformAdminBootstrapOutcome.BootstrapUnavailable, res.Outcome);
         }
 
+        // Active User-issued grant (e.g. from future standard grant flows) must not be treated as a completed bootstrap
+        var normalAdmin = User.Create($"usergrant.{Guid.NewGuid():N}@maintenx.internal", "hash", UserStatus.Active, now);
+        var granterUser = User.Create($"granter.{Guid.NewGuid():N}@maintenx.internal", "hash", UserStatus.Active, now);
+        using (var userGrantDb = CreateDbContext())
+        {
+            userGrantDb.Users.AddRange(normalAdmin, granterUser);
+            var userGrant = PlatformRoleGrant.Create(normalAdmin.Id, PlatformRole.PlatformAdministrator, granterUser.Id, now);
+            userGrantDb.PlatformRoleGrants.Add(userGrant);
+            await userGrantDb.SaveChangesAsync();
+        }
+
+        using (var dbUserGrant = CreateDbContext())
+        {
+            var res = await CreateBootstrapService(dbUserGrant)
+                .BootstrapAsync(new PlatformAdminBootstrapRequest(normalAdmin.Id, null, "Attempt bootstrap over user-issued grant"));
+            Assert.Equal(PlatformAdminBootstrapOutcome.BootstrapUnavailable, res.Outcome);
+        }
+
         using var verifyDb = CreateDbContext();
         Assert.Equal(0, await verifyDb.SecurityAuditEvents.CountAsync(e => e.EventType == SecurityAuditEventType.PlatformAdministratorBootstrapped));
+    }
+
+    [Fact]
+    public async Task MigrationDowngrade_WithDeploymentOperatorGrant_FailsClosedTransactionally()
+    {
+        var now = DateTime.UtcNow;
+        var user = User.Create($"downgrade.{Guid.NewGuid():N}@maintenx.internal", "hash", UserStatus.Active, now);
+
+        using (var seedDb = CreateDbContext())
+        {
+            seedDb.Users.Add(user);
+            var bootstrapGrant = PlatformRoleGrant.CreateForBootstrap(
+                user.Id,
+                PlatformRole.PlatformAdministrator,
+                "os:operator@deployment-node",
+                now);
+            var auditEvent = SecurityAuditEvent.Create(
+                SecurityAuditEventType.PlatformAdministratorBootstrapped,
+                now,
+                userId: user.Id,
+                sessionId: null,
+                clientIp: null,
+                metadata: SecurityAuditMetadata.ForBootstrap(bootstrapGrant.Id));
+
+            seedDb.PlatformRoleGrants.Add(bootstrapGrant);
+            seedDb.SecurityAuditEvents.Add(auditEvent);
+            await seedDb.SaveChangesAsync();
+        }
+
+        // Attempting to downgrade past AddPlatformAdminBootstrapAttribution must fail because granted_by_user_id cannot be SET NOT NULL when NULL operator rows exist
+        using (var downgradeDb = CreateDbContext())
+        {
+            var migrator = downgradeDb.GetInfrastructure().GetRequiredService<IMigrator>();
+            await Assert.ThrowsAnyAsync<Exception>(() =>
+                migrator.MigrateAsync("20261127110410_HardenPlatformRoleGrantConstraints"));
+        }
+
+        // Verify data remains fully intact and unchanged (atomic rollback on downgrade failure)
+        using (var verifyDb = CreateDbContext())
+        {
+            var grant = await verifyDb.PlatformRoleGrants.AsNoTracking().SingleAsync(g => g.UserId == user.Id);
+            Assert.Equal(GrantActorKind.DeploymentOperator, grant.GrantedByActorKind);
+            Assert.Null(grant.GrantedByUserId);
+            Assert.Equal("os:operator@deployment-node", grant.GrantedByOperatorId);
+
+            var audit = await verifyDb.SecurityAuditEvents.AsNoTracking().SingleAsync(a => a.UserId == user.Id);
+            Assert.Equal(SecurityAuditEventType.PlatformAdministratorBootstrapped, audit.EventType);
+            Assert.Equal($"grant_{grant.Id:N}", audit.DetectedLineage);
+        }
     }
 
     [Fact]
