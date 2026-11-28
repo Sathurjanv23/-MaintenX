@@ -109,14 +109,16 @@ public sealed class PlatformAdminBootstrapService : IPlatformAdminBootstrapServi
                 var existingPlatformGrants = await _dbContext.PlatformRoleGrants
                     .AsNoTracking()
                     .Where(g => g.Role == PlatformRole.PlatformAdministrator)
-                    .Select(g => new { g.Id, g.UserId, g.Status })
+                    .Select(g => new { g.Id, g.UserId, g.Status, g.GrantedByActorKind })
                     .ToListAsync(ct);
 
                 var activeGrants = existingPlatformGrants
                     .Where(g => g.Status == PlatformRoleGrantStatus.Active)
                     .ToList();
 
-                if (activeGrants.Count == 1 && activeGrants[0].UserId == targetUser.Id)
+                if (activeGrants.Count == 1 &&
+                    activeGrants[0].UserId == targetUser.Id &&
+                    activeGrants[0].GrantedByActorKind == GrantActorKind.DeploymentOperator)
                 {
                     await tx.RollbackAsync(ct);
                     return PlatformAdminBootstrapResult.AlreadyProvisionedForSameUser(
@@ -151,15 +153,14 @@ public sealed class PlatformAdminBootstrapService : IPlatformAdminBootstrapServi
                     operatorAuth.OperatorIdentity,
                     utcNow);
 
+                var auditMetadata = SecurityAuditMetadata.ForBootstrap(grant.Id);
                 var auditEvent = SecurityAuditEvent.Create(
                     SecurityAuditEventType.PlatformAdministratorBootstrapped,
                     utcNow,
                     userId: targetUser.Id,
                     sessionId: null,
                     clientIp: null,
-                    reason: SecurityAuditMetadata.Reasons.AdminAction,
-                    detectedLineage: SecurityAuditMetadata.Lineages.RootSession,
-                    actionTaken: SecurityAuditMetadata.Actions.AuditLogged);
+                    metadata: auditMetadata);
 
                 _dbContext.PlatformRoleGrants.Add(grant);
                 _dbContext.SecurityAuditEvents.Add(auditEvent);

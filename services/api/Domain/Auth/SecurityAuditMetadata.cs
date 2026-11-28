@@ -11,7 +11,7 @@ using System.Text.RegularExpressions;
 public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
 {
     private static readonly Regex LineageIdentifierRegex = new(
-        @"^(lineage|generation|gen|depth|ancestor|predecessor|node)_[a-zA-Z0-9]{1,32}$",
+        @"^(lineage|generation|gen|depth|ancestor|predecessor|node)_[a-zA-Z0-9]{1,32}$|^grant_[a-fA-F0-9]{32}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static class Reasons
@@ -35,6 +35,7 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         public const string RateLimitExceeded = "rate_limit_exceeded";
         public const string ConcurrencyConflict = "concurrency_conflict";
         public const string AdminAction = "admin_action";
+        public const string PlatformAdministratorBootstrap = "platform_administrator_bootstrap";
     }
 
     public static class Actions
@@ -53,6 +54,7 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         public const string SecurityStampRotated = "security_stamp_rotated";
         public const string RateLimited = "rate_limited";
         public const string AuditLogged = "audit_logged";
+        public const string PlatformAdministratorGranted = "platform_administrator_granted";
     }
 
     public static class Lineages
@@ -89,7 +91,8 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         Reasons.SessionExpired,
         Reasons.RateLimitExceeded,
         Reasons.ConcurrencyConflict,
-        Reasons.AdminAction
+        Reasons.AdminAction,
+        Reasons.PlatformAdministratorBootstrap
     }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
@@ -110,7 +113,8 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         Actions.AccountDeactivated,
         Actions.SecurityStampRotated,
         Actions.RateLimited,
-        Actions.AuditLogged
+        Actions.AuditLogged,
+        Actions.PlatformAdministratorGranted
     }.ToFrozenSet(StringComparer.Ordinal);
 
     /// <summary>
@@ -165,6 +169,29 @@ public sealed class SecurityAuditMetadata : IEquatable<SecurityAuditMetadata>
         Reason = ValidateAndNormalizeReason(reason);
         DetectedLineage = ValidateAndNormalizeLineage(detectedLineage);
         ActionTaken = ValidateAndNormalizeAction(actionTaken);
+    }
+
+    /// <summary>
+    /// Factory method instantiating a validated, safe <see cref="SecurityAuditMetadata"/> instance for bootstrap operations.
+    /// Explicitly binds the exact created grant identifier to the immutable audit trail lineage.
+    /// </summary>
+    /// <param name="grantId">Unique identifier of the correlated platform role grant.</param>
+    /// <param name="actionTaken">Optional approved action taken, defaults to <see cref="Actions.PlatformAdministratorGranted"/>.</param>
+    /// <returns>A validated SecurityAuditMetadata instance directly correlated to the grant ID.</returns>
+    public static SecurityAuditMetadata ForBootstrap(
+        Guid grantId,
+        string? actionTaken = Actions.PlatformAdministratorGranted)
+    {
+        if (grantId == Guid.Empty)
+        {
+            throw new ArgumentException("Grant ID cannot be empty.", nameof(grantId));
+        }
+
+        var grantLineage = $"grant_{grantId:N}";
+        return new SecurityAuditMetadata(
+            Reasons.PlatformAdministratorBootstrap,
+            grantLineage,
+            actionTaken);
     }
 
     /// <summary>
