@@ -2,9 +2,11 @@ namespace MaintenX.Api.Application.Tenancy.Resolution;
 
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using MaintenX.Api.Application.Authorization.Services;
 using MaintenX.Api.Application.Tenancy.Context;
 using MaintenX.Api.Application.Tenancy.Models;
 using MaintenX.Api.Common.Security;
+using MaintenX.Api.Domain.Authorization;
 using MaintenX.Api.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -13,13 +15,15 @@ using Microsoft.Extensions.Logging;
 /// <summary>
 /// Default server-side implementation of <see cref="ITenantActorResolver"/>.
 /// Validates caller identity against database session validity and security stamp caches.
-/// Strictly enforces that ordinary HTTP callers cannot establish platform-admin actor contexts (IsPlatformAdmin = false).
+/// Accurately evaluates platform administrator authority via <see cref="IPlatformGrantResolver"/>.
+/// Caller-supplied claims, headers, or tokens are never trusted for administrative authority.
 /// </summary>
 public sealed class TenantActorResolver : ITenantActorResolver
 {
     private readonly MaintenXDbContext _dbContext;
     private readonly ISecurityStampValidator _securityStampValidator;
     private readonly ITenantContextAccessor _tenantContextAccessor;
+    private readonly IPlatformGrantResolver? _platformGrantResolver;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<TenantActorResolver> _logger;
 
@@ -29,10 +33,22 @@ public sealed class TenantActorResolver : ITenantActorResolver
         ITenantContextAccessor tenantContextAccessor,
         TimeProvider timeProvider,
         ILogger<TenantActorResolver> logger)
+        : this(dbContext, securityStampValidator, tenantContextAccessor, platformGrantResolver: null, timeProvider, logger)
+    {
+    }
+
+    public TenantActorResolver(
+        MaintenXDbContext dbContext,
+        ISecurityStampValidator securityStampValidator,
+        ITenantContextAccessor tenantContextAccessor,
+        IPlatformGrantResolver? platformGrantResolver,
+        TimeProvider timeProvider,
+        ILogger<TenantActorResolver> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _securityStampValidator = securityStampValidator ?? throw new ArgumentNullException(nameof(securityStampValidator));
         _tenantContextAccessor = tenantContextAccessor ?? throw new ArgumentNullException(nameof(tenantContextAccessor));
+        _platformGrantResolver = platformGrantResolver;
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -106,7 +122,17 @@ public sealed class TenantActorResolver : ITenantActorResolver
                 "The authentication session is expired, revoked, or invalid.");
         }
 
-        // 6. Handle Tenant Context Requirements
+        // 6. Evaluate Platform Administrator authority strictly via authoritative resolver
+        var isPlatformAdmin = false;
+        if (_platformGrantResolver is not null)
+        {
+            var platformResolution = await _platformGrantResolver.ResolveAsync(
+                PermissionCatalog.Platform.TenantsRead,
+                cancellationToken);
+            isPlatformAdmin = platformResolution.IsAllowed;
+        }
+
+        // 7. Handle Tenant Context Requirements
         var currentTenantContext = _tenantContextAccessor.Current;
 
         if (requireActiveTenantContext)
@@ -130,24 +156,24 @@ public sealed class TenantActorResolver : ITenantActorResolver
                     "Access to the requested tenant context is denied.");
             }
 
-            // Tenant-scoped trusted actor: Never platform admin, derived exclusively from verified context
+            // Tenant-scoped trusted actor: includes verified platform admin status
             var tenantActor = new TenantActorContext(
                 UserId: userId,
-                IsPlatformAdmin: false,
+                IsPlatformAdmin: isPlatformAdmin,
                 TenantId: currentTenantContext.TenantId,
                 Role: currentTenantContext.Role);
 
             return TenantActorResolutionResult.Success(tenantActor);
         }
 
-        // 7. Tenant-Neutral Authenticated Actor (for Onboarding, Global Membership Discovery)
+        // 8. Tenant-Neutral Authenticated Actor (for Onboarding, Global Membership Discovery)
         // If an active verified tenant context is optionally present, bind it; otherwise return tenant-neutral context.
         var effectiveTenantId = currentTenantContext?.TenantId;
         var effectiveRole = currentTenantContext?.Role;
 
         var neutralActor = new TenantActorContext(
             UserId: userId,
-            IsPlatformAdmin: false,
+            IsPlatformAdmin: isPlatformAdmin,
             TenantId: effectiveTenantId,
             Role: effectiveRole);
 
