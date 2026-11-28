@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public sealed class PlatformAdminBootstrapService : IPlatformAdminBootstrapService
 {
-    private const long BootstrapAdvisoryLockId = 748291034L;
+    private const long BootstrapAdvisoryLockId = PlatformAuthorizationCoordination.AdvisoryLockId;
 
     private readonly MaintenXDbContext _dbContext;
     private readonly IBootstrapOperatorAuthorizationProvider _operatorAuthProvider;

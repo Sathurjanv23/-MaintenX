@@ -257,6 +257,10 @@ public class PlatformGrantResolverTests
         var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IPlatformGrantResolver));
         Assert.Equal(typeof(PlatformGrantResolver), descriptor.ImplementationType);
         Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+
+        var grantServiceDesc = Assert.Single(services, d => d.ServiceType == typeof(IPlatformGrantService));
+        Assert.Equal(typeof(PlatformGrantService), grantServiceDesc.ImplementationType);
+        Assert.Equal(ServiceLifetime.Scoped, grantServiceDesc.Lifetime);
     }
 
     private sealed class StubAuthenticationService(AuthenticateResult result) : IAuthenticationService

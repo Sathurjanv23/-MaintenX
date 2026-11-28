@@ -25,4 +25,9 @@
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="MaintenX.UnitTests" />
+    <InternalsVisibleTo Include="MaintenX.IntegrationTests" />
+  </ItemGroup>
+
 </Project>
