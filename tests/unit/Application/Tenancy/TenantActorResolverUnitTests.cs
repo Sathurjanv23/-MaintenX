@@ -265,4 +265,31 @@ public class TenantActorResolverUnitTests
         Assert.Equal(TenantMembershipRole.Owner, actor.Role);
         Assert.False(actor.IsPlatformAdmin); // Invariant: Owner/Admin never platform admin
     }
+
+    [Fact]
+    public void TenantActorResolver_Constructor_SupportsOptionalPlatformGrantResolver()
+    {
+        using var dbContext = CreateDummyContext();
+        var stampValidator = new FakeSecurityStampValidator();
+        var contextAccessor = new FakeTenantContextAccessor();
+
+        // 5-parameter overload (backwards compatibility)
+        var resolverWithoutGrant = new TenantActorResolver(
+            dbContext,
+            stampValidator,
+            contextAccessor,
+            TimeProvider.System,
+            NullLogger<TenantActorResolver>.Instance);
+        Assert.NotNull(resolverWithoutGrant);
+
+        // 6-parameter overload (with IPlatformGrantResolver)
+        var resolverWithGrant = new TenantActorResolver(
+            dbContext,
+            stampValidator,
+            contextAccessor,
+            platformGrantResolver: null,
+            TimeProvider.System,
+            NullLogger<TenantActorResolver>.Instance);
+        Assert.NotNull(resolverWithGrant);
+    }
 }
